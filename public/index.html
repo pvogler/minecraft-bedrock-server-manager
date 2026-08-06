@@ -323,6 +323,15 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
         }
 
+        // Helper function to format versions, since sometimes resource and behavior pack versions are arrays and sometimes strings.
+        function formatVersion(version) {
+            if (Array.isArray(version)) {
+                return version.join('.');
+            }
+
+            return version;
+        }
+
         // Login configuration - loaded from server
         let LOGIN_CONFIG = {
             SESSION_HOURS: 24 // Session timeout: 24 hours (hardcoded)
@@ -2886,8 +2895,8 @@
                                                                 </div>
                                                             </div>
                                                             <div class="text-xs text-gray-500">
-                                                                ${addon.behaviorPack?.version ? `BP v${addon.behaviorPack.version.join('.')} • ` : ''}
-                                                                ${addon.resourcePack?.version ? `RP v${addon.resourcePack.version.join('.')} • ` : ''}
+                                                                ${addon.behaviorPack?.version ? `BP v${formatVersion(addon.behaviorPack.version)} • ` : ''}
+                                                                ${addon.resourcePack?.version ? `RP v${formatVersion(addon.resourcePack.version)} • ` : ''}
                                                                 ${formatBytes(Math.max(addon.behaviorPack?.size || 0, addon.resourcePack?.size || 0))} •
                                                                 ${(() => {
                                                                     const bpDate = addon.behaviorPack?.modified ? new Date(addon.behaviorPack.modified) : null;
@@ -2920,8 +2929,8 @@
                                                                 ${isEnabled ? '<span class="px-2 py-0.5 text-xs bg-green-600 rounded">✓ Enabled</span>' : '<span class="px-2 py-0.5 text-xs bg-gray-600 rounded">Disabled</span>'}
                                                             </div>
                                                             <div class="text-xs text-gray-500">
-                                                                ${addon.behaviorPack?.version ? `BP v${addon.behaviorPack.version.join('.')} • ` : ''}
-                                                                ${addon.resourcePack?.version ? `RP v${addon.resourcePack.version.join('.')} • ` : ''}
+                                                                ${addon.behaviorPack?.version ? `BP v${formatVersion(addon.behaviorPack.version)} • ` : ''}
+                                                                ${addon.resourcePack?.version ? `RP v${formatVersion(addon.resourcePack.version)} • ` : ''}
                                                                 ${formatBytes(Math.max(addon.behaviorPack?.size || 0, addon.resourcePack?.size || 0))} •
                                                                 ${(() => {
                                                                     const bpDate = addon.behaviorPack?.modified ? new Date(addon.behaviorPack.modified) : null;
