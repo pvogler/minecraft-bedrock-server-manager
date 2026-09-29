@@ -1,5 +1,5 @@
 # Stage 1: Build Stage
-FROM node:18-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -17,9 +17,12 @@ RUN npm run build:css:prod
 RUN npm run copy-assets
 
 # Stage 2: Production Stage
-FROM node:18-alpine
+FROM node:26-alpine
 
 WORKDIR /app
+
+# docker CLI + compose plugin, used to manage per-instance docker-compose.yml files
+RUN apk add --no-cache docker-cli docker-cli-compose
 
 # Copy only production dependencies
 COPY package*.json ./

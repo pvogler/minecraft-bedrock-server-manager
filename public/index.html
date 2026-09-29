@@ -956,6 +956,16 @@
         }
 
         async function createServer() {
+            let suggestedPort = 19132;
+            try {
+                const suggestResp = await fetch(`${API_BASE}/servers/suggest-port?networkType=NetherNet`);
+                if (suggestResp.ok) {
+                    suggestedPort = (await suggestResp.json()).port;
+                }
+            } catch (err) {
+                // Fall back to the default port if the suggestion request fails
+            }
+
             const { value: formValues } = await Swal.fire({
                 title: 'Create New Server',
                 html: `
@@ -965,8 +975,26 @@
                             <input id="swal-server-name" type="text" placeholder="My Minecraft Server" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-white">
                         </div>
                         <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Server Port (Optional)</label>
-                            <input id="swal-server-port" type="number" placeholder="Default: 19132" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-white">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Server Port</label>
+                            <input id="swal-server-port" type="number" value="${suggestedPort}" placeholder="Default: 19132" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-white">
+                            <p class="text-xs text-gray-400 mt-1">Next free port, checked against existing servers</p>
+                        </div>
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Network Type</label>
+                            <div class="space-y-2">
+                                <div class="flex gap-2">
+                                    <label class="flex items-center">
+                                        <input type="radio" name="network-type" value="NetherNet" checked class="mr-2">
+                                        <span class="text-sm">NetherNet (default, TCP signaling + UDP media range)</span>
+                                    </label>
+                                </div>
+                                <div class="flex gap-2">
+                                    <label class="flex items-center">
+                                        <input type="radio" name="network-type" value="RakNet" class="mr-2">
+                                        <span class="text-sm">RakNet (UDP only)</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                         <div class="mb-4">
                             <label class="block text-sm font-medium text-gray-300 mb-2">Minecraft Version</label>
@@ -1009,10 +1037,26 @@
                             }
                         });
                     });
+                    // Re-run the port check when the transport changes, since NetherNet
+                    // needs a whole port range and could overlap another server
+                    document.querySelectorAll('input[name="network-type"]').forEach(radio => {
+                        radio.addEventListener('change', async (e) => {
+                            const portInput = document.getElementById('swal-server-port');
+                            try {
+                                const resp = await fetch(`${API_BASE}/servers/suggest-port?networkType=${e.target.value}`);
+                                if (resp.ok) {
+                                    portInput.value = (await resp.json()).port;
+                                }
+                            } catch (err) {
+                                // Keep the previously suggested port if the re-check fails
+                            }
+                        });
+                    });
                 },
                 preConfirm: () => {
                     const name = document.getElementById('swal-server-name').value.trim();
                     const port = document.getElementById('swal-server-port').value.trim();
+                    const networkType = document.querySelector('input[name="network-type"]:checked').value;
                     const versionType = document.querySelector('input[name="version-type"]:checked').value;
                     let version;
 
@@ -1030,19 +1074,19 @@
                         Swal.showValidationMessage('Server name is required!');
                         return false;
                     }
-                    return { name, port: port ? parseInt(port) : undefined, version };
+                    return { name, port: port ? parseInt(port) : undefined, version, networkType };
                 }
             });
 
             if (!formValues) return;
-            const { name, port, version } = formValues;
+            const { name, port, version, networkType } = formValues;
 
             try {
                 showLoading();
                 await fetch(`${API_BASE}/servers`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, port, version })
+                    body: JSON.stringify({ name, port, version, networkType })
                 });
                 await fetchServers();
                 hideLoading();
@@ -4266,6 +4310,16 @@
         }
 
         async function createServer() {
+            let suggestedPort = 19132;
+            try {
+                const suggestResp = await fetch(`${API_BASE}/servers/suggest-port?networkType=NetherNet`);
+                if (suggestResp.ok) {
+                    suggestedPort = (await suggestResp.json()).port;
+                }
+            } catch (err) {
+                // Fall back to the default port if the suggestion request fails
+            }
+
             const { value: formValues } = await Swal.fire({
                 title: 'Create New Server',
                 html: `
@@ -4275,8 +4329,26 @@
                             <input id="swal-server-name" type="text" placeholder="My Minecraft Server" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-white">
                         </div>
                         <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Server Port (Optional)</label>
-                            <input id="swal-server-port" type="number" placeholder="Default: 19132" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-white">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Server Port</label>
+                            <input id="swal-server-port" type="number" value="${suggestedPort}" placeholder="Default: 19132" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-white">
+                            <p class="text-xs text-gray-400 mt-1">Next free port, checked against existing servers</p>
+                        </div>
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Network Type</label>
+                            <div class="space-y-2">
+                                <div class="flex gap-2">
+                                    <label class="flex items-center">
+                                        <input type="radio" name="network-type" value="NetherNet" checked class="mr-2">
+                                        <span class="text-sm">NetherNet (default, TCP signaling + UDP media range)</span>
+                                    </label>
+                                </div>
+                                <div class="flex gap-2">
+                                    <label class="flex items-center">
+                                        <input type="radio" name="network-type" value="RakNet" class="mr-2">
+                                        <span class="text-sm">RakNet (UDP only)</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                         <div class="mb-4">
                             <label class="block text-sm font-medium text-gray-300 mb-2">Minecraft Version</label>
@@ -4319,10 +4391,26 @@
                             }
                         });
                     });
+                    // Re-run the port check when the transport changes, since NetherNet
+                    // needs a whole port range and could overlap another server
+                    document.querySelectorAll('input[name="network-type"]').forEach(radio => {
+                        radio.addEventListener('change', async (e) => {
+                            const portInput = document.getElementById('swal-server-port');
+                            try {
+                                const resp = await fetch(`${API_BASE}/servers/suggest-port?networkType=${e.target.value}`);
+                                if (resp.ok) {
+                                    portInput.value = (await resp.json()).port;
+                                }
+                            } catch (err) {
+                                // Keep the previously suggested port if the re-check fails
+                            }
+                        });
+                    });
                 },
                 preConfirm: () => {
                     const name = document.getElementById('swal-server-name').value.trim();
                     const port = document.getElementById('swal-server-port').value.trim();
+                    const networkType = document.querySelector('input[name="network-type"]:checked').value;
                     const versionType = document.querySelector('input[name="version-type"]:checked').value;
                     let version;
 
@@ -4340,19 +4428,19 @@
                         Swal.showValidationMessage('Server name is required!');
                         return false;
                     }
-                    return { name, port: port ? parseInt(port) : undefined, version };
+                    return { name, port: port ? parseInt(port) : undefined, version, networkType };
                 }
             });
 
             if (!formValues) return;
-            const { name, port, version } = formValues;
+            const { name, port, version, networkType } = formValues;
 
             try {
                 showLoading();
                 await fetch(`${API_BASE}/servers`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, port, version })
+                    body: JSON.stringify({ name, port, version, networkType })
                 });
                 await fetchServers();
                 hideLoading();
