@@ -353,6 +353,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const DATA_DIR = process.env.DATA_DIR;
 const BEDROCK_IMAGE = 'itzg/minecraft-bedrock-server';
 const COMPOSE_DIR = path.join(DATA_DIR, '.compose-files');
+const isPersistedServerId = (serverId) => /^bedrock-\d+$/.test(serverId);
 
 // Helper: Get server data path
 const getServerPath = (serverId) => path.join(DATA_DIR, serverId);
@@ -555,7 +556,8 @@ app.get('/api/servers', async (req, res) => {
     ]));
     try {
       for (const entry of await fs.readdir(DATA_DIR, { withFileTypes: true })) {
-        if (entry.isDirectory() && await fs.pathExists(path.join(DATA_DIR, entry.name, 'metadata.json'))) {
+        if (entry.isDirectory() && isPersistedServerId(entry.name)
+            && await fs.pathExists(path.join(DATA_DIR, entry.name, 'metadata.json'))) {
           serverIds.set(entry.name, { id: entry.name, managed: true });
         }
       }
@@ -855,8 +857,10 @@ app.post('/api/servers/:id/start', async (req, res) => {
     const serverPath = getServerPath(serverId);
     const metadataPath = path.join(serverPath, 'metadata.json');
     const composeFilePath = getComposeFilePath(serverId);
-    if (!container && !(await fs.pathExists(metadataPath)) && !(await fs.pathExists(composeFilePath))) {
-      return res.status(404).json({ error: 'Server not found' });
+    if (!container) {
+      const hasPersistedState = isPersistedServerId(serverId)
+        && ((await fs.pathExists(metadataPath)) || (await fs.pathExists(composeFilePath)));
+      if (!hasPersistedState) return res.status(404).json({ error: 'Server not found' });
     }
 
     // Try to start the instance via docker compose first
