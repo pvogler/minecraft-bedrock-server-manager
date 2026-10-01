@@ -771,6 +771,9 @@ app.get('/api/servers/suggest-port', async (req, res) => {
 app.post('/api/servers', async (req, res) => {
   try {
     const { name, version = 'LATEST', port, networkType = 'NetherNet' } = req.body;
+    if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
+      return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
+    }
     const serverId = `bedrock-${Date.now()}`;
     const serverPath = getServerPath(serverId);
     const hostDataPath = await getHostDataPath();
