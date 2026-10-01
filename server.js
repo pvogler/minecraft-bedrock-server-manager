@@ -511,6 +511,38 @@ const runCompose = async (serverId, args) => {
   }
 };
 
+const cleanupFailedServerCreation = async (serverId, serverPath) => {
+  const composeFilePath = getComposeFilePath(serverId);
+  if (await fs.pathExists(composeFilePath)) {
+    try {
+      await runCompose(serverId, 'down --remove-orphans');
+    } catch (err) {
+      console.warn(`docker compose down failed for ${serverId} during cleanup:`, err.message);
+    }
+
+    try {
+      const container = await getContainer(serverId);
+      if (container) await container.remove({ force: true });
+    } catch (err) {
+      console.warn(`Failed to remove partial container for ${serverId}:`, err.message);
+    }
+
+    try {
+      await fs.remove(composeFilePath);
+    } catch (err) {
+      console.warn(`Failed to remove compose manifest for ${serverId}:`, err.message);
+    }
+  }
+
+  if (serverPath) {
+    try {
+      await fs.remove(serverPath);
+    } catch (err) {
+      console.warn(`Failed to remove incomplete server data for ${serverId}:`, err.message);
+    }
+  }
+};
+
 // Helper: Regenerate a missing docker-compose.yml from existing container/metadata
 // (covers servers created before docker compose support was added)
 const ensureComposeFile = async (serverId) => {
@@ -619,6 +651,9 @@ app.get('/api/servers', async (req, res) => {
 
 // POST /api/servers/import - Import existing server
 app.post('/api/servers/import', async (req, res) => {
+  let serverId;
+  let serverPath;
+  let creationComplete = false;
   try {
     const { containerName, port } = req.body;
     if (!containerName || !containerName.trim()) {
@@ -687,8 +722,8 @@ app.post('/api/servers/import', async (req, res) => {
     let serverVersion = details.Config.Env?.find(env => env.startsWith('VERSION='))?.split('=')[1] || 'LATEST';
 
     // Create new server
-    const serverId = `bedrock-${Date.now()}`;
-    const serverPath = getServerPath(serverId);
+    serverId = `bedrock-${Date.now()}`;
+    serverPath = getServerPath(serverId);
     const hostDataPath = await getHostDataPath();
     const hostServerPath = path.join(hostDataPath, serverId);
 
@@ -778,6 +813,7 @@ app.post('/api/servers/import', async (req, res) => {
       metadata.creationComplete = true;
       await fs.writeJson(metadataPath3, metadata, { spaces: 2 });
     }
+    creationComplete = true;
 
     // Broadcast server update
     setTimeout(() => broadcastServerUpdate(serverId), 2000);
@@ -791,6 +827,7 @@ app.post('/api/servers/import', async (req, res) => {
     });
   } catch (err) {
     console.error('Import error:', err);
+    if (serverId && !creationComplete) await cleanupFailedServerCreation(serverId, serverPath);
     res.status(500).json({ error: err.message });
   }
 });
@@ -809,13 +846,16 @@ app.get('/api/servers/suggest-port', async (req, res) => {
 
 // POST /api/servers - Create new server
 app.post('/api/servers', async (req, res) => {
+  let serverId;
+  let serverPath;
+  let creationComplete = false;
   try {
     const { name, version = 'LATEST', port, networkType = 'NetherNet' } = req.body;
     if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
       return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
     }
-    const serverId = `bedrock-${Date.now()}`;
-    const serverPath = getServerPath(serverId);
+    serverId = `bedrock-${Date.now()}`;
+    serverPath = getServerPath(serverId);
     const hostDataPath = await getHostDataPath();
     const hostServerPath = path.join(hostDataPath, serverId);
 
@@ -884,6 +924,7 @@ app.post('/api/servers', async (req, res) => {
       metadata.creationComplete = true;
       await fs.writeJson(metadataPath2, metadata, { spaces: 2 });
     }
+    creationComplete = true;
 
     // Invalidate cache and broadcast server update
     invalidateServerCache();
@@ -898,6 +939,7 @@ app.post('/api/servers', async (req, res) => {
     });
   } catch (err) {
     console.error(err);
+    if (serverId && !creationComplete) await cleanupFailedServerCreation(serverId, serverPath);
     res.status(500).json({ error: err.message });
   }
 });
