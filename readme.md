@@ -70,7 +70,7 @@ This application uses WebSocket for real-time updates, providing instant UI sync
 #### Prerequisites
 - Docker installed
 - Docker Compose plugin installed (`docker compose` v2, used to create/start each server instance)
-- Node.js 18+
+- Node.js 20+
 
 Download the source  code
 
