@@ -685,7 +685,9 @@ app.post('/api/servers/import', async (req, res) => {
     metadata.createdAt = new Date().toISOString();
     metadata.updatedAt = new Date().toISOString();
     metadata.importedFrom = trimmedName;
-    const networkType = metadata.networkType === 'NetherNet' ? 'NetherNet' : 'RakNet';
+    const sourceTransport = details.Config.Env?.find(env => env.startsWith('TRANSPORT='))
+      ?.slice('TRANSPORT='.length).toLowerCase();
+    const networkType = metadata.networkType === 'NetherNet' || sourceTransport === 'nethernet' ? 'NetherNet' : 'RakNet';
     metadata.networkType = networkType;
 
     // Find available port or use requested one
