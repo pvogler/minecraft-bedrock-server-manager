@@ -354,9 +354,21 @@ const DATA_DIR = process.env.DATA_DIR;
 const BEDROCK_IMAGE = 'itzg/minecraft-bedrock-server';
 const COMPOSE_DIR = path.join(DATA_DIR, '.compose-files');
 const isPersistedServerId = (serverId) => /^bedrock-\d+$/.test(serverId);
+// Reject ids that escape DATA_DIR or target internal directories such as COMPOSE_DIR,
+// so the file APIs can never read or overwrite generated deployment manifests.
+const isValidServerId = (serverId) => typeof serverId === 'string'
+  && serverId.length > 0
+  && !serverId.startsWith('.')
+  && !/[\\/]/.test(serverId)
+  && !/\0/.test(serverId);
 
 // Helper: Get server data path
-const getServerPath = (serverId) => path.join(DATA_DIR, serverId);
+const getServerPath = (serverId) => {
+  if (!isValidServerId(serverId)) {
+    throw new Error('Invalid server ID');
+  }
+  return path.join(DATA_DIR, serverId);
+};
 const getLegacyComposeFilePath = (serverId) => path.join(getServerPath(serverId), 'docker-compose.yml');
 
 // Helper: Get host data path by inspecting container mounts
