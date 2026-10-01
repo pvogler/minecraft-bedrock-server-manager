@@ -93,6 +93,8 @@ DATA_DIR=/opt/minecraft-servers #change this to your data directory
 LOGIN_PASSWORD=your_secure_password_here
 MAX_LOGIN_ATTEMPTS=5
 LOGIN_LOCKOUT_MINUTES=5
+# Required when using NetherNet; the IP clients use to reach the server
+NETHERNET_ADVERTISED_IP=your.reachable.server.ip
 ```
 
 #### 3. **Create Data Directory**

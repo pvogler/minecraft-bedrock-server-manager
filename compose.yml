@@ -16,6 +16,7 @@ services:
     environment:
       - PORT=3001
       - LOGIN_PASSWORD=minecraft123 # Change this!
+      - NETHERNET_ADVERTISED_IP=${NETHERNET_ADVERTISED_IP:-}
     restart: unless-stopped
 
 volumes:

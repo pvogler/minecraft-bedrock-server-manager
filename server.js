@@ -438,6 +438,13 @@ const escapeComposeInterpolation = (value) => {
   return value;
 };
 
+const NETHERNET_ADVERTISED_IP = process.env.NETHERNET_ADVERTISED_IP?.trim();
+const assertNetherNetAddressConfigured = (networkType) => {
+  if (networkType === 'NetherNet' && !NETHERNET_ADVERTISED_IP) {
+    throw new Error('NETHERNET_ADVERTISED_IP must be set to the reachable server IP for NetherNet');
+  }
+};
+
 // Helper: NetherNet needs a UDP port range (for media) in addition to the TCP signaling port
 const getNetherNetUdpRange = (gamePort) => {
   const port = parseInt(gamePort, 10);
@@ -451,6 +458,7 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
   await fs.ensureDir(COMPOSE_DIR);
 
   const isNetherNet = networkType === 'NetherNet';
+  assertNetherNetAddressConfigured(networkType);
   const { start, end } = getNetherNetUdpRange(gamePort);
   const service = {
     image: BEDROCK_IMAGE,
@@ -460,7 +468,10 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
       EULA: 'TRUE',
       VERSION: version,
       SERVER_NAME: name,
-      ...(isNetherNet ? { TRANSPORT: 'nethernet', SERVER_UDP_PORTS: `${start}-${end}` } : {})
+      ...(isNetherNet ? {
+        TRANSPORT: 'nethernet',
+        SERVER_UDP_PORTS: `${NETHERNET_ADVERTISED_IP}:${start}-${end}:${start}-${end}`
+      } : {})
     },
     ports: isNetherNet
       ? [`${gamePort}:19132/tcp`, `${gamePort}:19132/udp`, `${start}-${end}:${start}-${end}/udp`]
@@ -504,35 +515,49 @@ const runCompose = async (serverId, args) => {
 // (covers servers created before docker compose support was added)
 const ensureComposeFile = async (serverId) => {
   const serverPath = getServerPath(serverId);
-  if (await fs.pathExists(getComposeFilePath(serverId))) return;
-
   const metadataPath = path.join(serverPath, 'metadata.json');
   let metadata = {};
   if (await fs.pathExists(metadataPath)) {
     metadata = await fs.readJson(metadataPath);
   }
 
+  const container = await getContainer(serverId);
+  const containerInfo = container ? await container.inspect() : null;
+  const isComposeManaged = containerInfo?.Config?.Labels?.['com.docker.compose.project'] === serverId;
+  const composeFileExists = await fs.pathExists(getComposeFilePath(serverId));
+  if (composeFileExists && (!containerInfo || isComposeManaged)) return;
+
   const hostDataPath = await getHostDataPath();
-  const hostServerPath = path.join(hostDataPath, serverId);
+  const dataMount = containerInfo?.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
+  const hostServerPath = dataMount?.Source || path.join(hostDataPath, serverId);
 
   let gamePort = metadata.gamePort || await getPublishedPortFromComposeFile(getLegacyComposeFilePath(serverId)) || 19132;
-  const container = await getContainer(serverId);
-  if (container) {
-    const info = await container.inspect();
-    gamePort = info.HostConfig?.PortBindings?.['19132/udp']?.[0]?.HostPort
-      || info.HostConfig?.PortBindings?.['19132/tcp']?.[0]?.HostPort
+  if (containerInfo) {
+    gamePort = containerInfo.HostConfig?.PortBindings?.['19132/udp']?.[0]?.HostPort
+      || containerInfo.HostConfig?.PortBindings?.['19132/tcp']?.[0]?.HostPort
       || gamePort;
   }
   metadata.gamePort = Number(gamePort);
   if (await fs.pathExists(metadataPath)) await fs.writeJson(metadataPath, metadata, { spaces: 2 });
 
-  await writeComposeFile(serverId, hostServerPath, {
-    name: metadata.name || serverId,
-    version: metadata.version || 'LATEST',
-    gamePort,
-    memory: metadata.memory || 2 * 1024 * 1024 * 1024,
-    networkType: metadata.networkType || 'RakNet'
-  });
+  if (!composeFileExists || (containerInfo && !isComposeManaged)) {
+    const getEnv = (name) => containerInfo?.Config?.Env?.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1);
+    const networkType = metadata.networkType || (getEnv('TRANSPORT')?.toLowerCase() === 'nethernet' ? 'NetherNet' : 'RakNet');
+    await writeComposeFile(serverId, hostServerPath, {
+      name: metadata.name || getEnv('SERVER_NAME') || serverId,
+      version: metadata.version || getEnv('VERSION') || 'LATEST',
+      gamePort,
+      memory: metadata.memory || containerInfo?.HostConfig?.Memory || 2 * 1024 * 1024 * 1024,
+      networkType
+    });
+  }
+
+  if (containerInfo && !isComposeManaged) {
+    const wasRunning = containerInfo.State?.Running;
+    if (wasRunning) await container.stop();
+    await container.remove();
+    await runCompose(serverId, wasRunning ? 'up -d' : 'create --force-recreate');
+  }
 };
 
 const discoverServers = async () => {
@@ -561,7 +586,14 @@ const discoverServers = async () => {
     for (const entry of await fs.readdir(DATA_DIR, { withFileTypes: true })) {
       if (entry.isDirectory() && isPersistedServerId(entry.name)
           && await fs.pathExists(path.join(DATA_DIR, entry.name, 'metadata.json'))) {
-        serverIds.set(entry.name, { id: entry.name, managed: true });
+        try {
+          const metadata = await fs.readJson(path.join(DATA_DIR, entry.name, 'metadata.json'));
+          if (metadata.creationComplete !== false) {
+            serverIds.set(entry.name, { id: entry.name, managed: true });
+          }
+        } catch (err) {
+          // Ignore incomplete or invalid metadata.
+        }
       }
     }
   } catch (err) {
@@ -711,6 +743,7 @@ app.post('/api/servers/import', async (req, res) => {
       gamePort = await findAvailablePort(19132, networkType);
     }
     metadata.gamePort = gamePort;
+    metadata.creationComplete = false;
     await fs.writeJson(metadataPath, metadata, { spaces: 2 });
 
     // Pull the Docker image if not available
@@ -742,6 +775,7 @@ app.post('/api/servers/import', async (req, res) => {
       const metadata = await fs.readJson(metadataPath3);
       metadata.containerName = actualContainerName;
       metadata.updatedAt = new Date().toISOString();
+      metadata.creationComplete = true;
       await fs.writeJson(metadataPath3, metadata, { spaces: 2 });
     }
 
@@ -794,6 +828,7 @@ app.post('/api/servers', async (req, res) => {
       name: name,
       version: version,
       networkType: networkType === 'RakNet' ? 'RakNet' : 'NetherNet',
+      creationComplete: false,
       memory: 2 * 1024 * 1024 * 1024, // 2GB default
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -846,6 +881,7 @@ app.post('/api/servers', async (req, res) => {
       const metadata = await fs.readJson(metadataPath2);
       metadata.containerName = actualContainerName;
       metadata.updatedAt = new Date().toISOString();
+      metadata.creationComplete = true;
       await fs.writeJson(metadataPath2, metadata, { spaces: 2 });
     }
 
@@ -1017,6 +1053,7 @@ app.post('/api/servers/:id/rename', async (req, res) => {
     if (await fs.pathExists(metadataPath)) {
       metadata = await fs.readJson(metadataPath);
     }
+    assertNetherNetAddressConfigured(metadata.networkType || 'RakNet');
 
     // Update the name
     metadata.name = name.trim();
@@ -1131,6 +1168,11 @@ app.post('/api/servers/:id/version', async (req, res) => {
 
     const containerInfo = await container.inspect();
     const wasRunning = containerInfo.State.Running;
+    let metadata = {};
+    if (await fs.pathExists(metadataPath)) {
+      metadata = await fs.readJson(metadataPath);
+    }
+    assertNetherNetAddressConfigured(metadata.networkType || 'RakNet');
 
     // Stop container if running
     if (wasRunning) {
@@ -1141,10 +1183,6 @@ app.post('/api/servers/:id/version', async (req, res) => {
     await container.remove();
 
     // Update metadata
-    let metadata = {};
-    if (await fs.pathExists(metadataPath)) {
-      metadata = await fs.readJson(metadataPath);
-    }
     metadata.version = version.trim();
     metadata.updatedAt = new Date().toISOString();
     await fs.writeJson(metadataPath, metadata, { spaces: 2 });
@@ -1220,6 +1258,11 @@ app.put('/api/servers/:id/memory', async (req, res) => {
 
     const containerInfo = await container.inspect();
     const wasRunning = containerInfo.State.Running;
+    let metadata = {};
+    if (await fs.pathExists(metadataPath)) {
+      metadata = await fs.readJson(metadataPath);
+    }
+    assertNetherNetAddressConfigured(metadata.networkType || 'RakNet');
 
     // Stop container if running
     if (wasRunning) {
@@ -1230,10 +1273,6 @@ app.put('/api/servers/:id/memory', async (req, res) => {
     await container.remove();
 
     // Update metadata
-    let metadata = {};
-    if (await fs.pathExists(metadataPath)) {
-      metadata = await fs.readJson(metadataPath);
-    }
     metadata.memory = memoryBytes;
     metadata.updatedAt = new Date().toISOString();
     await fs.writeJson(metadataPath, metadata, { spaces: 2 });
@@ -1307,12 +1346,13 @@ app.put('/api/servers/:id/port', async (req, res) => {
     const metadataPath = path.join(serverPath, 'metadata.json');
     const metadata = await fs.pathExists(metadataPath) ? await fs.readJson(metadataPath) : {};
     const networkType = metadata.networkType || 'RakNet';
+    assertNetherNetAddressConfigured(networkType);
 
     if (!port || isNaN(requestedPort) || requestedPort < 1 || requestedPort > getMaxGamePort(networkType)) {
       return res.status(400).json({ error: 'Valid port number is required' });
     }
 
-    if (!(await isPortAvailable(requestedPort, networkType))) {
+    if (!(await isPortAvailable(requestedPort, networkType, serverId))) {
       return res.status(400).json({ error: `Port ${requestedPort} is already in use` });
     }
 
@@ -1373,6 +1413,7 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
     if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
       return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
     }
+    assertNetherNetAddressConfigured(networkType);
 
     const serverId = req.params.id;
     const serverPath = getServerPath(serverId);
@@ -1397,15 +1438,17 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
       || containerInfo.HostConfig.PortBindings['19132/tcp']?.[0]?.HostPort
       || 19132;
 
-    // Stop and remove old container so its ports are freed before re-checking availability
+    // Switching to/from NetherNet changes how many host ports are needed (it also
+    // reserves a UDP range), so the previous port may now overlap another server
+    const parsedCurrentPort = parseInt(currentPort, 10);
+    const startPort = parsedCurrentPort <= getMaxGamePort(networkType) ? parsedCurrentPort : 19132;
+    const gamePort = await findAvailablePort(startPort, networkType, serverId);
+
+    // Resolve a valid replacement before removing the existing container.
     if (wasRunning) {
       await container.stop();
     }
     await container.remove();
-
-    // Switching to/from NetherNet changes how many host ports are needed (it also
-    // reserves a UDP range), so the previous port may now overlap another server
-    const gamePort = await findAvailablePort(parseInt(currentPort, 10), networkType, serverId);
 
     metadata.networkType = networkType;
     metadata.gamePort = gamePort;
@@ -2248,20 +2291,44 @@ const canBindPort = (port, protocol) => new Promise((resolve) => {
   server.listen(port, '0.0.0.0', () => server.close(() => resolve(true)));
 });
 
-const areRequiredPortsAvailable = async (gamePort, networkType) => {
+const areRequiredPortsAvailable = async (gamePort, networkType, ignoredPorts = new Set()) => {
   const udpPorts = getRequiredPorts(gamePort, networkType);
-  const probes = udpPorts.map(port => canBindPort(port, 'udp'));
-  if (networkType === 'NetherNet') probes.push(canBindPort(gamePort, 'tcp'));
+  const probes = udpPorts.filter(port => !ignoredPorts.has(port)).map(port => canBindPort(port, 'udp'));
+  if (networkType === 'NetherNet' && !ignoredPorts.has(Number(gamePort))) {
+    probes.push(canBindPort(gamePort, 'tcp'));
+  }
   const results = await Promise.all(probes);
   return results.every(Boolean);
 };
 
-async function isPortAvailable(port, networkType = 'RakNet') {
+const getServerBoundPorts = async (serverId) => {
+  if (!serverId) return new Set();
+  const container = await getContainer(serverId);
+  if (!container) return new Set();
+
+  const info = await container.inspect();
+  const ports = new Set();
+  Object.values(info.HostConfig?.PortBindings || {}).forEach(bindingList => {
+    (bindingList || []).forEach(binding => {
+      const port = parseInt(binding.HostPort, 10);
+      if (!isNaN(port)) ports.add(port);
+    });
+  });
+  return ports;
+};
+
+async function isPortAvailable(port, networkType = 'RakNet', excludeServerId = null) {
   if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > getMaxGamePort(networkType)) return false;
   // A port reserved by a stopped managed server isn't actually listening, so a bind
   // test alone would miss the conflict - check reserved ports first, including the
   // extra UDP range NetherNet needs around the primary port
-  const reservedPorts = await getReservedPorts();
+  const reservedPorts = await getReservedPorts(excludeServerId);
+  if (excludeServerId) {
+    const ownPorts = await getServerBoundPorts(excludeServerId);
+    for (const ownPort of ownPorts) reservedPorts.delete(ownPort);
+    return !getRequiredPorts(port, networkType).some(p => reservedPorts.has(p))
+      && areRequiredPortsAvailable(Number(port), networkType, ownPorts);
+  }
   const requiredPorts = getRequiredPorts(port, networkType);
   if (requiredPorts.some(p => reservedPorts.has(p))) return false;
 
@@ -2278,7 +2345,12 @@ async function getReservedPorts(excludeServerId = null) {
     const imageName = (c.Image || '').toLowerCase();
     const labels = c.Labels || {};
     const isBedrock = imageName.includes('bedrock') || imageName.includes('minecraft') || imageName.includes('itzg/') || labels['server-id'] || labels['server-name'];
-    if (!isBedrock) return;
+    const isExcludedServer = excludeServerId && (
+      labels['server-id'] === excludeServerId
+      || labels['com.docker.compose.project'] === excludeServerId
+      || (c.Names || []).includes(`/${excludeServerId}`)
+    );
+    if (!isBedrock || isExcludedServer) return;
 
     try {
       const info = await docker.getContainer(c.Id).inspect();
@@ -2332,6 +2404,7 @@ async function getReservedPorts(excludeServerId = null) {
 async function findAvailablePort(startPort, networkType = 'RakNet', excludeServerId = null) {
   // Check ports already reserved by managed servers first (covers stopped containers too)
   const reservedPorts = await getReservedPorts(excludeServerId);
+  const ownPorts = await getServerBoundPorts(excludeServerId);
   const maxPort = getMaxGamePort(networkType);
   let port = Number(startPort);
   if (!Number.isInteger(port) || port < 1 || port > maxPort) {
@@ -2345,7 +2418,7 @@ async function findAvailablePort(startPort, networkType = 'RakNet', excludeServe
       continue;
     }
 
-    if (await areRequiredPortsAvailable(port, networkType)) return port;
+    if (await areRequiredPortsAvailable(port, networkType, ownPorts)) return port;
     port++;
   }
   throw new Error(`No available ports for ${networkType} at or above ${startPort}`);
