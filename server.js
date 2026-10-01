@@ -836,7 +836,7 @@ app.post('/api/servers/import', async (req, res) => {
 app.get('/api/servers/suggest-port', async (req, res) => {
   try {
     const startPort = parseInt(req.query.start, 10) || 19132;
-    const networkType = req.query.networkType === 'RakNet' ? 'RakNet' : 'NetherNet';
+    const networkType = req.query.networkType === 'NetherNet' ? 'NetherNet' : 'RakNet';
     const port = await findAvailablePort(startPort, networkType);
     res.json({ port });
   } catch (err) {
@@ -850,7 +850,7 @@ app.post('/api/servers', async (req, res) => {
   let serverPath;
   let creationComplete = false;
   try {
-    const { name, version = 'LATEST', port, networkType = 'NetherNet' } = req.body;
+    const { name, version = 'LATEST', port, networkType = 'RakNet' } = req.body;
     if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
       return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
     }
@@ -867,7 +867,7 @@ app.post('/api/servers', async (req, res) => {
     const metadata = {
       name: name,
       version: version,
-      networkType: networkType === 'RakNet' ? 'RakNet' : 'NetherNet',
+      networkType: networkType === 'NetherNet' ? 'NetherNet' : 'RakNet',
       creationComplete: false,
       memory: 2 * 1024 * 1024 * 1024, // 2GB default
       createdAt: new Date().toISOString(),
