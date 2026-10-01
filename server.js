@@ -14,7 +14,7 @@ const multer = require('multer');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const util = require('util');
-const execAsync = util.promisify(require('child_process').exec);
+const execFileAsync = util.promisify(require('child_process').execFile);
 
 // Caching for server info and file operations
 const serverCache = new Map();
@@ -480,16 +480,22 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
 
 // Compose entrypoint: the docker CLI plugin locally, the standalone binary in the container
 const COMPOSE_CMD = process.env.COMPOSE_CMD || 'docker compose';
+const [COMPOSE_EXECUTABLE, ...COMPOSE_ARGS] = COMPOSE_CMD.split(/\s+/);
 
 // Helper: Run a `docker compose` subcommand against a server instance's compose file
 const runCompose = async (serverId, args) => {
   const composeFilePath = getComposeFilePath(serverId);
-  const shellQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
-  const cmd = `${COMPOSE_CMD} -f ${shellQuote(composeFilePath)} -p ${shellQuote(serverId)} ${args}`;
   try {
-    return await execAsync(cmd, { cwd: COMPOSE_DIR });
+    return await execFileAsync(COMPOSE_EXECUTABLE, [
+      ...COMPOSE_ARGS,
+      '-f',
+      composeFilePath,
+      '-p',
+      serverId,
+      ...args.trim().split(/\s+/)
+    ], { cwd: COMPOSE_DIR });
   } catch (err) {
-    console.error(`docker compose command failed: ${cmd}`, err.stderr || err.message);
+    console.error('docker compose command failed for server', serverId, err.stderr || err.message);
     throw err;
   }
 };
