@@ -626,6 +626,19 @@ const discoverServers = async () => {
     (c.Labels && c.Labels['server-id']) || c.Id,
     { id: (c.Labels && c.Labels['server-id']) || c.Id, managed: c.isManaged }
   ]));
+  for (const id of serverIds.keys()) {
+    if (isPersistedServerId(id)) {
+      const metadataPath = path.join(getServerPath(id), 'metadata.json');
+      if (await fs.pathExists(metadataPath)) {
+        try {
+          const metadata = await fs.readJson(metadataPath);
+          if (metadata.creationComplete === false) serverIds.delete(id);
+        } catch (err) {
+          // Ignore invalid metadata.
+        }
+      }
+    }
+  }
   try {
     for (const entry of await fs.readdir(DATA_DIR, { withFileTypes: true })) {
       if (entry.isDirectory() && isPersistedServerId(entry.name)
@@ -732,6 +745,12 @@ app.post('/api/servers/import', async (req, res) => {
     // Get server name and version from the source
     let serverName = details.Config.Env?.find(env => env.startsWith('SERVER_NAME='))?.split('=')[1] || trimmedName;
     let serverVersion = details.Config.Env?.find(env => env.startsWith('VERSION='))?.split('=')[1] || 'LATEST';
+    const sourceTransport = details.Config.Env?.find(env => env.startsWith('TRANSPORT='))
+      ?.slice('TRANSPORT='.length).toLowerCase();
+    const sourceMetadataPath = path.join(sourceDataPath, 'metadata.json');
+    const sourceMetadata = await fs.pathExists(sourceMetadataPath) ? await fs.readJson(sourceMetadataPath) : {};
+    const networkType = sourceMetadata.networkType === 'NetherNet' || sourceTransport === 'nethernet' ? 'NetherNet' : 'RakNet';
+    assertNetherNetAddressConfigured(networkType);
 
     // Create new server
     serverId = `bedrock-${Date.now()}`;
@@ -770,9 +789,6 @@ app.post('/api/servers/import', async (req, res) => {
     metadata.createdAt = new Date().toISOString();
     metadata.updatedAt = new Date().toISOString();
     metadata.importedFrom = trimmedName;
-    const sourceTransport = details.Config.Env?.find(env => env.startsWith('TRANSPORT='))
-      ?.slice('TRANSPORT='.length).toLowerCase();
-    const networkType = metadata.networkType === 'NetherNet' || sourceTransport === 'nethernet' ? 'NetherNet' : 'RakNet';
     metadata.networkType = networkType;
 
     // Find available port or use requested one
@@ -964,6 +980,12 @@ app.post('/api/servers/:id/start', async (req, res) => {
     const serverPath = getServerPath(serverId);
     const metadataPath = path.join(serverPath, 'metadata.json');
     const composeFilePath = getComposeFilePath(serverId);
+    if (await fs.pathExists(metadataPath)) {
+      const metadata = await fs.readJson(metadataPath);
+      if (metadata.creationComplete === false) {
+        return res.status(409).json({ error: 'Server creation is incomplete' });
+      }
+    }
     if (!container) {
       const hasPersistedState = isPersistedServerId(serverId)
         && ((await fs.pathExists(metadataPath)) || (await fs.pathExists(composeFilePath)));
@@ -2347,8 +2369,8 @@ const canBindPort = (port, protocol) => new Promise((resolve) => {
 
 const areRequiredPortsAvailable = async (gamePort, networkType, ignoredPorts = new Set()) => {
   const udpPorts = getRequiredPorts(gamePort, networkType);
-  const probes = udpPorts.filter(port => !ignoredPorts.has(port)).map(port => canBindPort(port, 'udp'));
-  if (networkType === 'NetherNet' && !ignoredPorts.has(Number(gamePort))) {
+  const probes = udpPorts.filter(port => !ignoredPorts.has(`udp:${port}`)).map(port => canBindPort(port, 'udp'));
+  if (networkType === 'NetherNet' && !ignoredPorts.has(`tcp:${Number(gamePort)}`)) {
     probes.push(canBindPort(gamePort, 'tcp'));
   }
   const results = await Promise.all(probes);
@@ -2362,10 +2384,11 @@ const getServerBoundPorts = async (serverId) => {
 
   const info = await container.inspect();
   const ports = new Set();
-  Object.values(info.HostConfig?.PortBindings || {}).forEach(bindingList => {
+  Object.entries(info.HostConfig?.PortBindings || {}).forEach(([containerPort, bindingList]) => {
+    const protocol = containerPort.split('/')[1] || 'tcp';
     (bindingList || []).forEach(binding => {
       const port = parseInt(binding.HostPort, 10);
-      if (!isNaN(port)) ports.add(port);
+      if (!isNaN(port)) ports.add(`${protocol}:${port}`);
     });
   });
   return ports;
@@ -2379,7 +2402,6 @@ async function isPortAvailable(port, networkType = 'RakNet', excludeServerId = n
   const reservedPorts = await getReservedPorts(excludeServerId);
   if (excludeServerId) {
     const ownPorts = await getServerBoundPorts(excludeServerId);
-    for (const ownPort of ownPorts) reservedPorts.delete(ownPort);
     return !getRequiredPorts(port, networkType).some(p => reservedPorts.has(p))
       && areRequiredPortsAvailable(Number(port), networkType, ownPorts);
   }
