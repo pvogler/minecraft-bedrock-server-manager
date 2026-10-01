@@ -299,8 +299,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Handle preflight OPTIONS requests
-app.options('*', (req, res) => {
+// Handle preflight OPTIONS requests ('/{*splat}' is the Express 5 catch-all syntax)
+app.options('/{*splat}', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
@@ -432,11 +432,14 @@ ${ports}
   await fs.writeFile(getComposeFilePath(serverPath), compose, 'utf8');
 };
 
+// Compose entrypoint: the docker CLI plugin locally, the standalone binary in the container
+const COMPOSE_CMD = process.env.COMPOSE_CMD || 'docker compose';
+
 // Helper: Run a `docker compose` subcommand against a server instance's compose file
 const runCompose = async (serverId, args) => {
   const serverPath = getServerPath(serverId);
   const composeFilePath = getComposeFilePath(serverPath);
-  const cmd = `docker compose -f "${composeFilePath}" -p "${serverId}" ${args}`;
+  const cmd = `${COMPOSE_CMD} -f "${composeFilePath}" -p "${serverId}" ${args}`;
   try {
     return await execAsync(cmd, { cwd: serverPath });
   } catch (err) {

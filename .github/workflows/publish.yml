@@ -5,6 +5,10 @@ on:
     branches: [main]
     tags: ['v*.*.*']
   pull_request:
+  # Weekly rebuild so the published image picks up base-image and apk/npm
+  # patches even when no digest change triggered a Renovate PR
+  schedule:
+    - cron: '0 5 * * 1'
   workflow_dispatch:
 
 env:

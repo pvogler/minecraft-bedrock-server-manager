@@ -1,0 +1,59 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "timezone": "Etc/UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "pinDigests": true,
+  "packageRules": [
+    {
+      "description": "Collapse routine npm updates into one PR to cut review noise",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm non-major"
+    },
+    {
+      "description": "Major npm bumps land separately - they need manual migration",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["breaking"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Base image rebuilds: check daily so tag refreshes land quickly",
+      "matchManagers": ["dockerfile"],
+      "schedule": ["before 6am"],
+      "groupName": "base images",
+      "addLabels": ["base-image"]
+    },
+    {
+      "description": "A digest-only change means the tag was rebuilt upstream - safe to automerge",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Keep the pinned Compose binary in Dockerfile up to date",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+ARG COMPOSE_VERSION=(?<currentValue>\\S+)"
+      ]
+    }
+  ]
+}
