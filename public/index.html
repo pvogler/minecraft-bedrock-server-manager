@@ -1083,11 +1083,18 @@
 
             try {
                 showLoading();
-                await fetch(`${API_BASE}/servers`, {
+                const response = await fetch(`${API_BASE}/servers`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, port, version, networkType })
                 });
+
+                const result = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to create server');
+                }
+
                 await fetchServers();
                 hideLoading();
             } catch (err) {
@@ -4437,11 +4444,18 @@
 
             try {
                 showLoading();
-                await fetch(`${API_BASE}/servers`, {
+                const response = await fetch(`${API_BASE}/servers`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, port, version, networkType })
                 });
+
+                const result = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to create server');
+                }
+
                 await fetchServers();
                 hideLoading();
             } catch (err) {

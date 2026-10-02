@@ -752,6 +752,22 @@ app.post('/api/servers/import', async (req, res) => {
     const networkType = sourceMetadata.networkType === 'NetherNet' || sourceTransport === 'nethernet' ? 'NetherNet' : 'RakNet';
     assertNetherNetAddressConfigured(networkType);
 
+    // Resolve the game port before touching the source container so that an invalid or
+    // occupied port does not leave the imported source stopped and data copied
+    let gamePort;
+    if (port) {
+      const requestedPort = parseInt(port);
+      if (isNaN(requestedPort) || requestedPort < 1 || requestedPort > getMaxGamePort(networkType)) {
+        return res.status(400).json({ error: 'Invalid port number' });
+      }
+      if (!(await isPortAvailable(requestedPort, networkType))) {
+        return res.status(400).json({ error: `Port ${requestedPort} is already in use` });
+      }
+      gamePort = requestedPort;
+    } else {
+      gamePort = await findAvailablePort(19132, networkType);
+    }
+
     // Create new server
     serverId = `bedrock-${Date.now()}`;
     serverPath = getServerPath(serverId);
@@ -791,20 +807,6 @@ app.post('/api/servers/import', async (req, res) => {
     metadata.importedFrom = trimmedName;
     metadata.networkType = networkType;
 
-    // Find available port or use requested one
-    let gamePort;
-    if (port) {
-      const requestedPort = parseInt(port);
-      if (isNaN(requestedPort) || requestedPort < 1 || requestedPort > getMaxGamePort(networkType)) {
-        return res.status(400).json({ error: 'Invalid port number' });
-      }
-      if (!(await isPortAvailable(requestedPort, networkType))) {
-        return res.status(400).json({ error: `Port ${requestedPort} is already in use` });
-      }
-      gamePort = requestedPort;
-    } else {
-      gamePort = await findAvailablePort(19132, networkType);
-    }
     metadata.gamePort = gamePort;
     metadata.creationComplete = false;
     await fs.writeJson(metadataPath, metadata, { spaces: 2 });
