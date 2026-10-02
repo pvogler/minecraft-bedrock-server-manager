@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    groups:
+      # Majors stay ungrouped so breaking changes get reviewed on their own
+      npm-non-major:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: daily
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "base-image"]
+    groups:
+      base-images:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    groups:
+      github-actions:
+        patterns: ["*"]

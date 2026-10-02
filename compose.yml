@@ -16,6 +16,7 @@ services:
     environment:
       - PORT=3001
       - LOGIN_PASSWORD=minecraft123 # Change this!
+      - BIND_IP=${BIND_IP:-0.0.0.0}
     restart: unless-stopped
 
 volumes:

@@ -1,0 +1,28 @@
+name: Dependabot auto-merge
+
+# Deliberately does NOT check out the PR branch: pull_request_target runs with
+# write permissions, so running PR-authored code here would be exploitable.
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # A base-image patch refresh carries no API change to review
+      - name: Enable auto-merge for base image refreshes
+        if: steps.meta.outputs.package-ecosystem == 'docker' && steps.meta.outputs.update-type == 'version-update:semver-patch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

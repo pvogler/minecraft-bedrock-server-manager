@@ -7,6 +7,8 @@ Full-stack application to manage multiple Minecraft Bedrock servers using itzg/d
 
 The aplication will deploy a minecraft bedrock server using docker itzg/docker-minecraft-bedrock-server latest image, assign port, persistent volume. The aplication then act as UI to manage this container.
 
+Each server instance is created via its own generated `docker-compose.yml`, saved outside the writable server data folders under `<DATA_DIR>/.compose-files/`. The manager uses `docker compose` (via the Docker CLI) to create, start, stop, restart and remove each instance, instead of talking to the Docker API directly.
+
 ### Features
 - ✅ Real-time WebSocket Updates
 - ✅ Multiple server management
@@ -67,7 +69,9 @@ This application uses WebSocket for real-time updates, providing instant UI sync
 
 #### Prerequisites
 - Docker installed
-- Node.js 18+
+- Docker Compose plugin installed (`docker compose` v2, used to create/start each server instance)
+- Node.js 26+
+
 
 Download the source  code
 
@@ -90,6 +94,8 @@ DATA_DIR=/opt/minecraft-servers #change this to your data directory
 LOGIN_PASSWORD=your_secure_password_here
 MAX_LOGIN_ATTEMPTS=5
 LOGIN_LOCKOUT_MINUTES=5
+# Default host address new servers bind to; NetherNet advertises it to clients
+BIND_IP=0.0.0.0
 ```
 
 #### 3. **Create Data Directory**
@@ -175,6 +181,8 @@ You can customize the deployment by editing the `docker-compose.yml` file:
 #### Volumes
 - `minecraft-data`: Persistent storage for Minecraft server data
 - `/var/run/docker.sock`: Allows the app to manage Docker containers
+
+> **Note**: the manager image bundles Docker Compose, since it runs `docker compose` against generated per-server manifests in `<DATA_DIR>/.compose-files/`, separate from the data mounted into game containers.
 
 ---
 

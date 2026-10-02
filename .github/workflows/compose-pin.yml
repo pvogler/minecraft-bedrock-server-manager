@@ -1,0 +1,59 @@
+name: Update Compose pin
+
+# Dependabot has no custom/regex manager, so the ARG COMPOSE_VERSION pin in the
+# Dockerfile has to be tracked by hand.
+on:
+  schedule:
+    - cron: '30 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve latest Compose release
+        id: compose
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest="$(gh api repos/docker/compose/releases/latest --jq .tag_name)"
+          # Reject anything that isn't a plain vX.Y.Z tag before it reaches sed
+          if ! printf '%s' "$latest" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Unexpected tag format: $latest" >&2
+            exit 1
+          fi
+          current="$(sed -n 's/^ARG COMPOSE_VERSION=//p' Dockerfile)"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "Current: $current / Latest: $latest"
+
+      - name: Bump the pin
+        if: steps.compose.outputs.latest != steps.compose.outputs.current
+        env:
+          LATEST: ${{ steps.compose.outputs.latest }}
+        run: sed -i "s|^ARG COMPOSE_VERSION=.*|ARG COMPOSE_VERSION=${LATEST}|" Dockerfile
+
+      - name: Open pull request
+        if: steps.compose.outputs.latest != steps.compose.outputs.current
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          branch: chore/compose-${{ steps.compose.outputs.latest }}
+          title: "chore(deps): update docker compose to ${{ steps.compose.outputs.latest }}"
+          commit-message: "chore(deps): update docker compose to ${{ steps.compose.outputs.latest }}"
+          labels: dependencies
+          body: |
+            Bumps the pinned Compose binary in `Dockerfile`.
+
+            `${{ steps.compose.outputs.current }}` → `${{ steps.compose.outputs.latest }}`
+
+            Release notes: https://github.com/docker/compose/releases/tag/${{ steps.compose.outputs.latest }}
+
+            The build verifies the download against the upstream `.sha256` file.
