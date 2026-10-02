@@ -966,6 +966,16 @@
                 // Fall back to the default port if the suggestion request fails
             }
 
+            let netherNetAvailable = true;
+            try {
+                const networkResp = await fetch(`${API_BASE}/config/network`);
+                if (networkResp.ok) {
+                    netherNetAvailable = (await networkResp.json()).netherNetAvailable !== false;
+                }
+            } catch (err) {
+                // Leave NetherNet selectable if the configuration request fails
+            }
+
             const { value: formValues } = await Swal.fire({
                 title: 'Create New Server',
                 html: `
@@ -989,11 +999,12 @@
                                     </label>
                                 </div>
                                 <div class="flex gap-2">
-                                    <label class="flex items-center">
-                                        <input type="radio" name="network-type" value="NetherNet" class="mr-2">
+                                    <label class="flex items-center ${netherNetAvailable ? '' : 'opacity-50 cursor-not-allowed'}">
+                                        <input type="radio" name="network-type" value="NetherNet" class="mr-2" ${netherNetAvailable ? '' : 'disabled'}>
                                         <span class="text-sm">NetherNet (TCP signaling + UDP media range)</span>
                                     </label>
                                 </div>
+                                ${netherNetAvailable ? '' : '<p class="text-xs text-gray-400">Set NETHERNET_ADVERTISED_IP on the manager to enable NetherNet</p>'}
                             </div>
                         </div>
                         <div class="mb-4">
@@ -4327,6 +4338,16 @@
                 // Fall back to the default port if the suggestion request fails
             }
 
+            let netherNetAvailable = true;
+            try {
+                const networkResp = await fetch(`${API_BASE}/config/network`);
+                if (networkResp.ok) {
+                    netherNetAvailable = (await networkResp.json()).netherNetAvailable !== false;
+                }
+            } catch (err) {
+                // Leave NetherNet selectable if the configuration request fails
+            }
+
             const { value: formValues } = await Swal.fire({
                 title: 'Create New Server',
                 html: `
@@ -4350,11 +4371,12 @@
                                     </label>
                                 </div>
                                 <div class="flex gap-2">
-                                    <label class="flex items-center">
-                                        <input type="radio" name="network-type" value="NetherNet" class="mr-2">
+                                    <label class="flex items-center ${netherNetAvailable ? '' : 'opacity-50 cursor-not-allowed'}">
+                                        <input type="radio" name="network-type" value="NetherNet" class="mr-2" ${netherNetAvailable ? '' : 'disabled'}>
                                         <span class="text-sm">NetherNet (TCP signaling + UDP media range)</span>
                                     </label>
                                 </div>
+                                ${netherNetAvailable ? '' : '<p class="text-xs text-gray-400">Set NETHERNET_ADVERTISED_IP on the manager to enable NetherNet</p>'}
                             </div>
                         </div>
                         <div class="mb-4">

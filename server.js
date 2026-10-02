@@ -2548,6 +2548,13 @@ app.get('/api/config/login', (req, res) => {
   });
 });
 
+// Serve network configuration so the UI can hide NetherNet until an advertised IP is set
+app.get('/api/config/network', (req, res) => {
+  res.json({
+    netherNetAvailable: Boolean(NETHERNET_ADVERTISED_IP)
+  });
+});
+
 // Serve upload configuration
 app.get('/api/config/upload', (req, res) => {
   res.json({
