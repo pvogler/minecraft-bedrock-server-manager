@@ -575,6 +575,8 @@ const ensureComposeFile = async (serverId) => {
   const dataMount = containerInfo?.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
   const hostServerPath = dataMount?.Source || path.join(hostDataPath, serverId);
 
+  const getEnv = (name) => containerInfo?.Config?.Env?.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1);
+
   let gamePort = metadata.gamePort || await getPublishedPortFromComposeFile(getLegacyComposeFilePath(serverId)) || 19132;
   if (containerInfo) {
     gamePort = containerInfo.HostConfig?.PortBindings?.['19132/udp']?.[0]?.HostPort
@@ -582,11 +584,11 @@ const ensureComposeFile = async (serverId) => {
       || gamePort;
   }
   metadata.gamePort = Number(gamePort);
+  const networkType = metadata.networkType || (getEnv('TRANSPORT')?.toLowerCase() === 'nethernet' ? 'NetherNet' : 'RakNet');
+  metadata.networkType = networkType;
   if (await fs.pathExists(metadataPath)) await fs.writeJson(metadataPath, metadata, { spaces: 2 });
 
   if (!composeFileExists || (containerInfo && !isComposeManaged)) {
-    const getEnv = (name) => containerInfo?.Config?.Env?.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1);
-    const networkType = metadata.networkType || (getEnv('TRANSPORT')?.toLowerCase() === 'nethernet' ? 'NetherNet' : 'RakNet');
     await writeComposeFile(serverId, hostServerPath, {
       name: metadata.name || getEnv('SERVER_NAME') || serverId,
       version: metadata.version || getEnv('VERSION') || 'LATEST',
