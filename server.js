@@ -557,7 +557,7 @@ const cleanupFailedServerCreation = async (serverId, serverPath) => {
 
 // Helper: Regenerate a missing docker-compose.yml from existing container/metadata
 // (covers servers created before docker compose support was added)
-const ensureComposeFile = async (serverId) => {
+const ensureComposeFile = async (serverId, { recreateContainer = true } = {}) => {
   const serverPath = getServerPath(serverId);
   const metadataPath = path.join(serverPath, 'metadata.json');
   let metadata = {};
@@ -598,11 +598,25 @@ const ensureComposeFile = async (serverId) => {
     });
   }
 
-  if (containerInfo && !isComposeManaged) {
+  if (recreateContainer && containerInfo && !isComposeManaged) {
     const wasRunning = containerInfo.State?.Running;
     if (wasRunning) await container.stop();
     await container.remove();
     await runCompose(serverId, wasRunning ? 'up -d' : 'create --force-recreate');
+  }
+};
+
+// Legacy containers are the only record of their published port, so persist that
+// binding and a Compose manifest while the container still exists. Recreating the
+// container is left to the next lifecycle action.
+const persistedLegacyServers = new Set();
+const persistLegacyServerState = async (serverId) => {
+  if (persistedLegacyServers.has(serverId)) return;
+  try {
+    await ensureComposeFile(serverId, { recreateContainer: false });
+    persistedLegacyServers.add(serverId);
+  } catch (err) {
+    console.warn(`Failed to persist legacy configuration for ${serverId}:`, err.message);
   }
 };
 
@@ -628,17 +642,21 @@ const discoverServers = async () => {
     (c.Labels && c.Labels['server-id']) || c.Id,
     { id: (c.Labels && c.Labels['server-id']) || c.Id, managed: c.isManaged }
   ]));
-  for (const id of serverIds.keys()) {
+  for (const [id, entry] of [...serverIds]) {
     if (isPersistedServerId(id)) {
       const metadataPath = path.join(getServerPath(id), 'metadata.json');
       if (await fs.pathExists(metadataPath)) {
         try {
           const metadata = await fs.readJson(metadataPath);
-          if (metadata.creationComplete === false) serverIds.delete(id);
+          if (metadata.creationComplete === false) {
+            serverIds.delete(id);
+            continue;
+          }
         } catch (err) {
           // Ignore invalid metadata.
         }
       }
+      if (entry.managed) await persistLegacyServerState(id);
     }
   }
   try {

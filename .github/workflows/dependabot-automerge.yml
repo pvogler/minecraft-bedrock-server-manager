@@ -19,9 +19,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # A base-image digest or patch refresh carries no API change to review
+      # A base-image patch refresh carries no API change to review
       - name: Enable auto-merge for base image refreshes
-        if: steps.meta.outputs.package-ecosystem == 'docker' && steps.meta.outputs.update-type != 'version-update:semver-major'
+        if: steps.meta.outputs.package-ecosystem == 'docker' && steps.meta.outputs.update-type == 'version-update:semver-patch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
