@@ -679,6 +679,7 @@ app.post('/api/servers/import', async (req, res) => {
   let serverId;
   let serverPath;
   let creationComplete = false;
+  let stoppedSourceContainer = null;
   try {
     const { containerName, port } = req.body;
     if (!containerName || !containerName.trim()) {
@@ -753,19 +754,21 @@ app.post('/api/servers/import', async (req, res) => {
     assertNetherNetAddressConfigured(networkType);
 
     // Resolve the game port before touching the source container so that an invalid or
-    // occupied port does not leave the imported source stopped and data copied
+    // occupied port does not leave the imported source stopped and data copied.
+    // The source is stopped before the replacement starts, so its own ports may be reused.
+    const sourceServerId = labels['server-id'] || trimmedName;
     let gamePort;
     if (port) {
       const requestedPort = parseInt(port);
       if (isNaN(requestedPort) || requestedPort < 1 || requestedPort > getMaxGamePort(networkType)) {
         return res.status(400).json({ error: 'Invalid port number' });
       }
-      if (!(await isPortAvailable(requestedPort, networkType))) {
+      if (!(await isPortAvailable(requestedPort, networkType, sourceServerId))) {
         return res.status(400).json({ error: `Port ${requestedPort} is already in use` });
       }
       gamePort = requestedPort;
     } else {
-      gamePort = await findAvailablePort(19132, networkType);
+      gamePort = await findAvailablePort(19132, networkType, sourceServerId);
     }
 
     // Create new server
@@ -782,6 +785,7 @@ app.post('/api/servers/import', async (req, res) => {
     try {
       if (details.State.Status === 'running') {
         await container.stop();
+        stoppedSourceContainer = container;
         console.log(`Stopped container: ${trimmedName}`);
       }
     } catch (stopErr) {
@@ -857,7 +861,17 @@ app.post('/api/servers/import', async (req, res) => {
     });
   } catch (err) {
     console.error('Import error:', err);
-    if (serverId && !creationComplete) await cleanupFailedServerCreation(serverId, serverPath);
+    if (serverId && !creationComplete) {
+      await cleanupFailedServerCreation(serverId, serverPath);
+      if (stoppedSourceContainer) {
+        try {
+          await stoppedSourceContainer.start();
+          console.log('Restarted original container after failed import');
+        } catch (startErr) {
+          console.warn('Failed to restart original container after failed import:', startErr.message);
+        }
+      }
+    }
     res.status(500).json({ error: err.message });
   }
 });
