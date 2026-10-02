@@ -82,12 +82,13 @@ async function getCachedServerInfo(serverId) {
     try {
       const metadata = await readCachedFile(path.join(serverPath, 'metadata.json'), 'json');
       const gamePort = Number(metadata.gamePort || await getPublishedPortFromComposeFile(getLegacyComposeFilePath(serverId)) || 19132);
-      const ports = [{ IP: '0.0.0.0', PrivatePort: 19132, PublicPort: gamePort, Type: 'udp' }];
+      const bindIp = metadata.bindIp || '0.0.0.0';
+      const ports = [{ IP: bindIp, PrivatePort: 19132, PublicPort: gamePort, Type: 'udp' }];
       if (metadata.networkType === 'NetherNet') {
-        ports.push({ IP: '0.0.0.0', PrivatePort: 19132, PublicPort: gamePort, Type: 'tcp' });
+        ports.push({ IP: bindIp, PrivatePort: 19132, PublicPort: gamePort, Type: 'tcp' });
         const { start, end } = getNetherNetUdpRange(gamePort);
         for (let port = start; port <= end; port++) {
-          ports.push({ IP: '0.0.0.0', PrivatePort: port, PublicPort: port, Type: 'udp' });
+          ports.push({ IP: bindIp, PrivatePort: port, PublicPort: port, Type: 'udp' });
         }
       }
       const serverData = {
@@ -450,11 +451,14 @@ const escapeComposeInterpolation = (value) => {
   return value;
 };
 
-const NETHERNET_ADVERTISED_IP = process.env.NETHERNET_ADVERTISED_IP?.trim();
-const assertNetherNetAddressConfigured = (networkType) => {
-  if (networkType === 'NetherNet' && !NETHERNET_ADVERTISED_IP) {
-    throw new Error('NETHERNET_ADVERTISED_IP must be set to the reachable server IP for NetherNet');
+// Host interface the published container ports bind to. NetherNet also advertises it to clients.
+const DEFAULT_BIND_IP = process.env.BIND_IP?.trim() || process.env.NETHERNET_ADVERTISED_IP?.trim() || '0.0.0.0';
+const resolveBindIp = (bindIp) => {
+  const value = typeof bindIp === 'string' && bindIp.trim() ? bindIp.trim() : DEFAULT_BIND_IP;
+  if (!require('net').isIPv4(value)) {
+    throw new Error('bindIp must be a valid IPv4 address');
   }
+  return value;
 };
 
 // Helper: NetherNet needs a UDP port range (for media) in addition to the TCP signaling port
@@ -466,11 +470,13 @@ const getNetherNetUdpRange = (gamePort) => {
 };
 
 // Helper: Write the docker-compose.yml describing a server instance
-const writeComposeFile = async (serverId, hostServerPath, { name, version, gamePort, memory, networkType = 'RakNet' }) => {
+const writeComposeFile = async (serverId, hostServerPath, { name, version, gamePort, memory, networkType = 'NetherNet', bindIp }) => {
   await fs.ensureDir(COMPOSE_DIR);
 
   const isNetherNet = networkType === 'NetherNet';
-  assertNetherNetAddressConfigured(networkType);
+  const hostIp = resolveBindIp(bindIp);
+  // 0.0.0.0 is not a routable address to advertise, so publish the range without an IP
+  const advertisedPrefix = hostIp === '0.0.0.0' ? '' : `${hostIp}:`;
   const { start, end } = getNetherNetUdpRange(gamePort);
   const service = {
     image: BEDROCK_IMAGE,
@@ -482,12 +488,12 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
       SERVER_NAME: name,
       ...(isNetherNet ? {
         TRANSPORT: 'nethernet',
-        SERVER_UDP_PORTS: `${NETHERNET_ADVERTISED_IP}:${start}-${end}:${start}-${end}`
+        SERVER_UDP_PORTS: `${advertisedPrefix}${start}-${end}:${start}-${end}`
       } : {})
     },
     ports: isNetherNet
-      ? [`${gamePort}:19132/tcp`, `${gamePort}:19132/udp`, `${start}-${end}:${start}-${end}/udp`]
-      : [`${gamePort}:19132/udp`],
+      ? [`${advertisedPrefix}${gamePort}:19132/tcp`, `${advertisedPrefix}${gamePort}:19132/udp`, `${advertisedPrefix}${start}-${end}:${start}-${end}/udp`]
+      : [`${advertisedPrefix}${gamePort}:19132/udp`],
     volumes: [`${hostServerPath}:/data`],
     mem_limit: memory,
     restart: 'unless-stopped'
@@ -586,6 +592,10 @@ const ensureComposeFile = async (serverId, { recreateContainer = true } = {}) =>
   metadata.gamePort = Number(gamePort);
   const networkType = metadata.networkType || (getEnv('TRANSPORT')?.toLowerCase() === 'nethernet' ? 'NetherNet' : 'RakNet');
   metadata.networkType = networkType;
+  metadata.bindIp = metadata.bindIp
+    || containerInfo?.HostConfig?.PortBindings?.['19132/udp']?.[0]?.HostIp
+    || containerInfo?.HostConfig?.PortBindings?.['19132/tcp']?.[0]?.HostIp
+    || DEFAULT_BIND_IP;
   if (await fs.pathExists(metadataPath)) await fs.writeJson(metadataPath, metadata, { spaces: 2 });
 
   if (!composeFileExists || (containerInfo && !isComposeManaged)) {
@@ -594,7 +604,8 @@ const ensureComposeFile = async (serverId, { recreateContainer = true } = {}) =>
       version: metadata.version || getEnv('VERSION') || 'LATEST',
       gamePort,
       memory: metadata.memory || containerInfo?.HostConfig?.Memory || 2 * 1024 * 1024 * 1024,
-      networkType
+      networkType,
+      bindIp: metadata.bindIp
     });
   }
 
@@ -771,7 +782,10 @@ app.post('/api/servers/import', async (req, res) => {
     const sourceMetadataPath = path.join(sourceDataPath, 'metadata.json');
     const sourceMetadata = await fs.pathExists(sourceMetadataPath) ? await fs.readJson(sourceMetadataPath) : {};
     const networkType = sourceMetadata.networkType === 'NetherNet' || sourceTransport === 'nethernet' ? 'NetherNet' : 'RakNet';
-    assertNetherNetAddressConfigured(networkType);
+    const bindIp = resolveBindIp(req.body.bindIp
+      || sourceMetadata.bindIp
+      || details.HostConfig?.PortBindings?.['19132/udp']?.[0]?.HostIp
+      || details.HostConfig?.PortBindings?.['19132/tcp']?.[0]?.HostIp);
 
     // Resolve the game port before touching the source container so that an invalid or
     // occupied port does not leave the imported source stopped and data copied.
@@ -830,6 +844,7 @@ app.post('/api/servers/import', async (req, res) => {
     metadata.updatedAt = new Date().toISOString();
     metadata.importedFrom = trimmedName;
     metadata.networkType = networkType;
+    metadata.bindIp = bindIp;
 
     metadata.gamePort = gamePort;
     metadata.creationComplete = false;
@@ -852,7 +867,7 @@ app.post('/api/servers/import', async (req, res) => {
     }
 
     // Write docker-compose.yml and start the instance via docker compose
-    await writeComposeFile(serverId, hostServerPath, { name: serverName, version: serverVersion, gamePort, memory: metadata.memory, networkType });
+    await writeComposeFile(serverId, hostServerPath, { name: serverName, version: serverVersion, gamePort, memory: metadata.memory, networkType, bindIp });
     await runCompose(serverId, 'up -d');
 
     // Update metadata with actual container name
@@ -900,7 +915,7 @@ app.post('/api/servers/import', async (req, res) => {
 app.get('/api/servers/suggest-port', async (req, res) => {
   try {
     const startPort = parseInt(req.query.start, 10) || 19132;
-    const networkType = req.query.networkType === 'NetherNet' ? 'NetherNet' : 'RakNet';
+    const networkType = req.query.networkType === 'RakNet' ? 'RakNet' : 'NetherNet';
     const port = await findAvailablePort(startPort, networkType);
     res.json({ port });
   } catch (err) {
@@ -914,10 +929,14 @@ app.post('/api/servers', async (req, res) => {
   let serverPath;
   let creationComplete = false;
   try {
-    const { name, version = 'LATEST', port, networkType = 'RakNet' } = req.body;
+    const { name, version = 'LATEST', port, networkType = 'NetherNet', bindIp } = req.body;
     if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
       return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
     }
+    if (bindIp !== undefined && bindIp !== null && String(bindIp).trim() && !require('net').isIPv4(String(bindIp).trim())) {
+      return res.status(400).json({ error: 'bindIp must be a valid IPv4 address' });
+    }
+    const hostBindIp = resolveBindIp(bindIp);
     serverId = `bedrock-${Date.now()}`;
     serverPath = getServerPath(serverId);
     const hostDataPath = await getHostDataPath();
@@ -932,6 +951,7 @@ app.post('/api/servers', async (req, res) => {
       name: name,
       version: version,
       networkType: networkType === 'NetherNet' ? 'NetherNet' : 'RakNet',
+      bindIp: hostBindIp,
       creationComplete: false,
       memory: 2 * 1024 * 1024 * 1024, // 2GB default
       createdAt: new Date().toISOString(),
@@ -973,7 +993,7 @@ app.post('/api/servers', async (req, res) => {
     }
 
     // Write docker-compose.yml and start the instance via docker compose
-    await writeComposeFile(serverId, hostServerPath, { name, version, gamePort, memory: metadata.memory, networkType: metadata.networkType });
+    await writeComposeFile(serverId, hostServerPath, { name, version, gamePort, memory: metadata.memory, networkType: metadata.networkType, bindIp: hostBindIp });
     await runCompose(serverId, 'up -d');
 
     // Update metadata with actual container name
@@ -1078,7 +1098,7 @@ app.post('/api/servers/:id/start', async (req, res) => {
         let memory = metadata.memory || 2 * 1024 * 1024 * 1024; // default 2GB
 
         // Rewrite docker-compose.yml with the new port and start via docker compose
-        await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort: newGamePort, memory, networkType });
+        await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort: newGamePort, memory, networkType, bindIp: metadata.bindIp });
         await runCompose(serverId, 'up -d');
         metadata.gamePort = newGamePort;
 
@@ -1165,7 +1185,6 @@ app.post('/api/servers/:id/rename', async (req, res) => {
     if (await fs.pathExists(metadataPath)) {
       metadata = await fs.readJson(metadataPath);
     }
-    assertNetherNetAddressConfigured(metadata.networkType || 'RakNet');
 
     // Update the name
     metadata.name = name.trim();
@@ -1220,7 +1239,7 @@ app.post('/api/servers/:id/rename', async (req, res) => {
     }
 
     // Create new container with updated server name
-    await writeComposeFile(serverId, hostServerPath, { name: name.trim(), version: metadata.version || 'LATEST', gamePort, memory, networkType: metadata.networkType });
+    await writeComposeFile(serverId, hostServerPath, { name: name.trim(), version: metadata.version || 'LATEST', gamePort, memory, networkType: metadata.networkType, bindIp: metadata.bindIp });
 
     // Start container if it was running before
     if (wasRunning) {
@@ -1284,7 +1303,6 @@ app.post('/api/servers/:id/version', async (req, res) => {
     if (await fs.pathExists(metadataPath)) {
       metadata = await fs.readJson(metadataPath);
     }
-    assertNetherNetAddressConfigured(metadata.networkType || 'RakNet');
 
     // Stop container if running
     if (wasRunning) {
@@ -1309,7 +1327,7 @@ app.post('/api/servers/:id/version', async (req, res) => {
     const hostServerPath = path.join(hostDataPath, serverId);
 
     // Create new container with updated version
-    await writeComposeFile(serverId, hostServerPath, { name: metadata.name, version: version.trim(), gamePort, memory, networkType: metadata.networkType });
+    await writeComposeFile(serverId, hostServerPath, { name: metadata.name, version: version.trim(), gamePort, memory, networkType: metadata.networkType, bindIp: metadata.bindIp });
 
     // Start container if it was running before
     if (wasRunning) {
@@ -1374,7 +1392,6 @@ app.put('/api/servers/:id/memory', async (req, res) => {
     if (await fs.pathExists(metadataPath)) {
       metadata = await fs.readJson(metadataPath);
     }
-    assertNetherNetAddressConfigured(metadata.networkType || 'RakNet');
 
     // Stop container if running
     if (wasRunning) {
@@ -1412,7 +1429,7 @@ app.put('/api/servers/:id/memory', async (req, res) => {
     }
 
     // Create new container with updated memory
-    await writeComposeFile(serverId, hostServerPath, { name: metadata.name, version: metadata.version || 'LATEST', gamePort, memory: memoryBytes, networkType: metadata.networkType });
+    await writeComposeFile(serverId, hostServerPath, { name: metadata.name, version: metadata.version || 'LATEST', gamePort, memory: memoryBytes, networkType: metadata.networkType, bindIp: metadata.bindIp });
 
     // Start container if it was running before
     if (wasRunning) {
@@ -1458,7 +1475,6 @@ app.put('/api/servers/:id/port', async (req, res) => {
     const metadataPath = path.join(serverPath, 'metadata.json');
     const metadata = await fs.pathExists(metadataPath) ? await fs.readJson(metadataPath) : {};
     const networkType = metadata.networkType || 'RakNet';
-    assertNetherNetAddressConfigured(networkType);
 
     if (!port || isNaN(requestedPort) || requestedPort < 1 || requestedPort > getMaxGamePort(networkType)) {
       return res.status(400).json({ error: 'Valid port number is required' });
@@ -1488,7 +1504,7 @@ app.put('/api/servers/:id/port', async (req, res) => {
     await container.remove();
 
     // Create new container with NEW PORT
-    await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort: requestedPort, memory: metadata.memory || 2 * 1024 * 1024 * 1024, networkType: metadata.networkType });
+    await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort: requestedPort, memory: metadata.memory || 2 * 1024 * 1024 * 1024, networkType: metadata.networkType, bindIp: metadata.bindIp });
 
     // Start if it was running
     if (wasRunning) {
@@ -1525,7 +1541,6 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
     if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
       return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
     }
-    assertNetherNetAddressConfigured(networkType);
 
     const serverId = req.params.id;
     const serverPath = getServerPath(serverId);
@@ -1570,7 +1585,7 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
     metadata.updatedAt = new Date().toISOString();
 
     // Rewrite docker-compose.yml with the ports/environment for the new transport
-    await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort, memory: metadata.memory || 2 * 1024 * 1024 * 1024, networkType });
+    await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort, memory: metadata.memory || 2 * 1024 * 1024 * 1024, networkType, bindIp: metadata.bindIp });
 
     if (wasRunning) {
       await runCompose(serverId, 'up -d');
@@ -2433,7 +2448,7 @@ const getServerBoundPorts = async (serverId) => {
   return ports;
 };
 
-async function isPortAvailable(port, networkType = 'RakNet', excludeServerId = null) {
+async function isPortAvailable(port, networkType = 'NetherNet', excludeServerId = null) {
   if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > getMaxGamePort(networkType)) return false;
   // A port reserved by a stopped managed server isn't actually listening, so a bind
   // test alone would miss the conflict - check reserved ports first, including the
@@ -2516,7 +2531,7 @@ async function getReservedPorts(excludeServerId = null) {
   return ports;
 }
 
-async function findAvailablePort(startPort, networkType = 'RakNet', excludeServerId = null) {
+async function findAvailablePort(startPort, networkType = 'NetherNet', excludeServerId = null) {
   // Check ports already reserved by managed servers first (covers stopped containers too)
   const reservedPorts = await getReservedPorts(excludeServerId);
   const ownPorts = await getServerBoundPorts(excludeServerId);
@@ -2548,10 +2563,11 @@ app.get('/api/config/login', (req, res) => {
   });
 });
 
-// Serve network configuration so the UI can hide NetherNet until an advertised IP is set
+// Serve network configuration so the UI can prefill the host bind address
 app.get('/api/config/network', (req, res) => {
   res.json({
-    netherNetAvailable: Boolean(NETHERNET_ADVERTISED_IP)
+    netherNetAvailable: true,
+    defaultBindIp: DEFAULT_BIND_IP
   });
 });
 
