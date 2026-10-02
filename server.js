@@ -1529,6 +1529,9 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
 
     const serverId = req.params.id;
     const serverPath = getServerPath(serverId);
+    if (!await fs.pathExists(serverPath)) {
+      return res.status(404).json({ error: 'Managed server not found' });
+    }
     const hostDataPath = await getHostDataPath();
     const hostServerPath = path.join(hostDataPath, serverId);
 
