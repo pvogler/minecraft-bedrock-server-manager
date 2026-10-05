@@ -727,9 +727,11 @@ app.post('/api/servers/:id/convert-to-compose', async (req, res) => {
       return res.status(409).json({ error: 'Server is already managed by Docker Compose' });
     }
 
-    const hostDataPath = await getHostDataPath();
+    const hostDataPath = path.resolve(await getHostDataPath());
     const dataMount = info.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
-    if (!dataMount?.Source || !dataMount.Source.startsWith(hostDataPath)) {
+    const sourcePath = dataMount?.Source && path.resolve(dataMount.Source);
+    const relativePath = sourcePath && path.relative(hostDataPath, sourcePath);
+    if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
       return res.status(400).json({ error: 'Only servers stored in the manager data directory can be converted in place. Import external servers instead.' });
     }
 
