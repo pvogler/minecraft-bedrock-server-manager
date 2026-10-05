@@ -682,6 +682,7 @@ const ensureComposeFile = async (serverId, { recreateContainer = true, retainLeg
     } catch (err) {
       if (retainLegacyOnFailure && legacyRenamed) {
         try {
+          const containers = await docker.listContainers({ all: true });
           const replacement = containers.find(c => c.Names?.includes(`/${serverId}`));
           if (replacement) {
             const replacementContainer = docker.getContainer(replacement.Id);
