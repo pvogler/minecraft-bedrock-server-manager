@@ -606,7 +606,7 @@ const cleanupFailedServerCreation = async (serverId, serverPath) => {
 
 // Helper: Regenerate a missing docker-compose.yml from existing container/metadata
 // (covers servers created before docker compose support was added)
-const ensureComposeFile = async (serverId, { recreateContainer = true } = {}) => {
+const ensureComposeFile = async (serverId, { recreateContainer = true, retainLegacyOnFailure = false } = {}) => {
   const serverPath = getServerPath(serverId);
   const metadataPath = path.join(serverPath, 'metadata.json');
   let metadata = {};
@@ -654,9 +654,55 @@ const ensureComposeFile = async (serverId, { recreateContainer = true } = {}) =>
 
   if (recreateContainer && containerInfo && !isComposeManaged) {
     const wasRunning = containerInfo.State?.Running;
-    if (wasRunning) await container.stop();
-    await container.remove();
-    await runCompose(serverId, wasRunning ? 'up -d' : 'create --force-recreate');
+    const legacyContainerName = `mbsm-legacy-${containerInfo.Id.slice(0, 12)}-${Date.now()}`;
+    let legacyStopped = false;
+    let legacyRenamed = false;
+    try {
+      if (wasRunning) {
+        legacyStopped = true;
+        await container.stop();
+      }
+      if (retainLegacyOnFailure) {
+        await container.rename({ name: legacyContainerName });
+        legacyRenamed = true;
+      } else {
+        await container.remove();
+      }
+
+      await runCompose(serverId, wasRunning ? 'up -d' : 'create --force-recreate');
+      if (retainLegacyOnFailure) {
+        const containers = await docker.listContainers({ all: true });
+        const replacement = containers.find(c => c.Names?.includes(`/${serverId}`));
+        const replacementInfo = replacement && await docker.getContainer(replacement.Id).inspect();
+        if (replacementInfo?.Config.Labels?.['com.docker.compose.project'] !== serverId) {
+          throw new Error('Docker Compose did not take ownership of the server container');
+        }
+        await container.remove();
+      }
+    } catch (err) {
+      if (retainLegacyOnFailure && legacyRenamed) {
+        try {
+          const containers = await docker.listContainers({ all: true });
+          const replacement = containers.find(c => c.Names?.includes(`/${serverId}`));
+          if (replacement) await docker.getContainer(replacement.Id).remove({ force: true });
+        } catch (cleanupErr) {
+          console.error(`Failed to remove partial Compose container for ${serverId}:`, cleanupErr.message);
+        }
+        try {
+          await container.rename({ name: serverId });
+        } catch (restoreErr) {
+          console.error(`Failed to restore legacy container name for ${serverId}:`, restoreErr.message);
+        }
+      }
+      if (retainLegacyOnFailure && legacyStopped && wasRunning) {
+        try {
+          await container.start();
+        } catch (restoreErr) {
+          console.error(`Failed to restart legacy container for ${serverId}:`, restoreErr.message);
+        }
+      }
+      throw err;
+    }
   }
 };
 
@@ -777,7 +823,7 @@ app.post('/api/servers/:id/convert-to-compose', async (req, res) => {
       return res.status(400).json({ error: 'Only servers stored in the manager data directory can be converted in place. Import external servers instead.' });
     }
 
-    await ensureComposeFile(serverId);
+    await ensureComposeFile(serverId, { retainLegacyOnFailure: true });
     const convertedContainer = await getContainer(serverId);
     const convertedInfo = convertedContainer && await convertedContainer.inspect();
     if (convertedInfo?.Config.Labels?.['com.docker.compose.project'] !== serverId) {
