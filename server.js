@@ -682,9 +682,14 @@ const ensureComposeFile = async (serverId, { recreateContainer = true, retainLeg
     } catch (err) {
       if (retainLegacyOnFailure && legacyRenamed) {
         try {
-          const containers = await docker.listContainers({ all: true });
           const replacement = containers.find(c => c.Names?.includes(`/${serverId}`));
-          if (replacement) await docker.getContainer(replacement.Id).remove({ force: true });
+          if (replacement) {
+            const replacementContainer = docker.getContainer(replacement.Id);
+            const replacementInfo = await replacementContainer.inspect();
+            if (replacementInfo.Config?.Labels?.['com.docker.compose.project'] === serverId) {
+              await replacementContainer.remove({ force: true });
+            }
+          }
         } catch (cleanupErr) {
           console.error('Failed to remove partial Compose container for', serverId, cleanupErr.message);
         }
