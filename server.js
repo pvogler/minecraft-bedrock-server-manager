@@ -232,6 +232,9 @@ async function getCachedServerInfo(serverId) {
     webPort: PORT,
     containerExists: true,
     composeManaged: !!info.Config.Labels?.['com.docker.compose.project'],
+    composeConversionSupported: !!(isManaged || hasServerIdLabel)
+      && !info.Config.Labels?.['com.docker.compose.project']
+      && await canConvertContainerToCompose(info),
     managed: !!(isManaged || hasServerIdLabel)
   };
 
@@ -511,6 +514,42 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
   await fs.writeFile(getComposeFilePath(serverId), compose, 'utf8');
 };
 
+const canConvertContainerToCompose = async (info) => {
+  const config = info.Config || {};
+  const hostConfig = info.HostConfig || {};
+  if (config.Image !== BEDROCK_IMAGE
+      || config.User
+      || (info.Mounts || []).length !== 1
+      || (info.Mounts || [])[0]?.Type !== 'bind'
+      || (info.Mounts || [])[0]?.RW === false
+      || hostConfig.RestartPolicy?.Name !== 'unless-stopped'
+      || hostConfig.Privileged
+      || hostConfig.CapAdd?.length
+      || hostConfig.CapDrop?.length
+      || hostConfig.Devices?.length
+      || hostConfig.SecurityOpt?.length) {
+    return false;
+  }
+
+  let imageConfig;
+  try {
+    imageConfig = (await docker.getImage(info.Image).inspect()).Config || {};
+  } catch (err) {
+    return false;
+  }
+
+  const managerEnvironment = new Set(['EULA', 'VERSION', 'SERVER_NAME', 'TRANSPORT', 'SERVER_UDP_PORTS']);
+  const imageEnvironment = new Set(imageConfig.Env || []);
+  const hasCustomEnvironment = (config.Env || []).some((entry) => {
+    const name = entry.split('=', 1)[0];
+    return !managerEnvironment.has(name) && !imageEnvironment.has(entry);
+  });
+
+  return !hasCustomEnvironment
+    && JSON.stringify(config.Entrypoint || null) === JSON.stringify(imageConfig.Entrypoint || null)
+    && JSON.stringify(config.Cmd || null) === JSON.stringify(imageConfig.Cmd || null);
+};
+
 // Compose entrypoint: the docker CLI plugin locally, the standalone binary in the container
 const COMPOSE_CMD = process.env.COMPOSE_CMD || 'docker compose';
 const [COMPOSE_EXECUTABLE, ...COMPOSE_ARGS] = COMPOSE_CMD.split(/\s+/);
@@ -725,6 +764,9 @@ app.post('/api/servers/:id/convert-to-compose', async (req, res) => {
     const info = await container.inspect();
     if (info.Config.Labels?.['com.docker.compose.project'] === serverId) {
       return res.status(409).json({ error: 'Server is already managed by Docker Compose' });
+    }
+    if (!(await canConvertContainerToCompose(info))) {
+      return res.status(400).json({ error: 'This container has settings that cannot be preserved during conversion. Import it instead.' });
     }
 
     const hostDataPath = path.resolve(await getHostDataPath());
