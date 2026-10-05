@@ -231,7 +231,7 @@ async function getCachedServerInfo(serverId) {
     ports: ports,
     webPort: PORT,
     containerExists: true,
-    composeManaged: info.Config.Labels?.['com.docker.compose.project'] === serverId,
+    composeManaged: !!info.Config.Labels?.['com.docker.compose.project'],
     managed: !!(isManaged || hasServerIdLabel)
   };
 
