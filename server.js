@@ -716,6 +716,9 @@ app.get('/api/servers', async (req, res) => {
 app.post('/api/servers/:id/convert-to-compose', async (req, res) => {
   try {
     const serverId = req.params.id;
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(serverId)) {
+      return res.status(400).json({ error: 'Server ID is not compatible with Docker Compose' });
+    }
     const container = await getContainer(serverId);
     if (!container) return res.status(404).json({ error: 'Server container not found' });
 
