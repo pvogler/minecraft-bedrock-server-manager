@@ -105,6 +105,8 @@ async function getCachedServerInfo(serverId) {
         worldSize: '0 MB',
         ports,
         webPort: PORT,
+        containerExists: false,
+        composeManaged: false,
         managed: true
       };
       serverCache.set(cacheKey, { data: serverData, timestamp: now });
@@ -228,6 +230,8 @@ async function getCachedServerInfo(serverId) {
     worldSize: worldSize,
     ports: ports,
     webPort: PORT,
+    containerExists: true,
+    composeManaged: info.Config.Labels?.['com.docker.compose.project'] === serverId,
     managed: !!(isManaged || hasServerIdLabel)
   };
 
@@ -704,6 +708,40 @@ app.get('/api/servers', async (req, res) => {
     res.json(await discoverServers());
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/servers/:id/convert-to-compose - Convert a managed legacy container
+app.post('/api/servers/:id/convert-to-compose', async (req, res) => {
+  try {
+    const serverId = req.params.id;
+    const container = await getContainer(serverId);
+    if (!container) return res.status(404).json({ error: 'Server container not found' });
+
+    const info = await container.inspect();
+    if (info.Config.Labels?.['com.docker.compose.project'] === serverId) {
+      return res.status(409).json({ error: 'Server is already managed by Docker Compose' });
+    }
+
+    const hostDataPath = await getHostDataPath();
+    const dataMount = info.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
+    if (!dataMount?.Source || !dataMount.Source.startsWith(hostDataPath)) {
+      return res.status(400).json({ error: 'Only servers stored in the manager data directory can be converted in place. Import external servers instead.' });
+    }
+
+    await ensureComposeFile(serverId);
+    const convertedContainer = await getContainer(serverId);
+    const convertedInfo = convertedContainer && await convertedContainer.inspect();
+    if (convertedInfo?.Config.Labels?.['com.docker.compose.project'] !== serverId) {
+      throw new Error('Docker Compose did not take ownership of the server container');
+    }
+
+    invalidateServerCache(serverId);
+    broadcastServerUpdate(serverId);
+    res.json({ message: 'Server converted to Docker Compose successfully' });
+  } catch (err) {
+    console.error('Error converting server to Docker Compose:', err);
     res.status(500).json({ error: err.message });
   }
 });
