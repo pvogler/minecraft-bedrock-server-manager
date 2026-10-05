@@ -633,7 +633,10 @@ const persistLegacyServerState = async (serverId) => {
 
 const discoverServers = async () => {
   const containers = await docker.listContainers({ all: true });
+  const managerContainerId = process.env.HOSTNAME;
   const bedrockServers = await Promise.all(containers.filter(c => {
+    if (managerContainerId && c.Id?.startsWith(managerContainerId)) return false;
+
     const imageName = (c.Image || "").toLowerCase();
     const labels = c.Labels || {};
     const isBedrock = imageName.includes("bedrock") ||
