@@ -686,19 +686,19 @@ const ensureComposeFile = async (serverId, { recreateContainer = true, retainLeg
           const replacement = containers.find(c => c.Names?.includes(`/${serverId}`));
           if (replacement) await docker.getContainer(replacement.Id).remove({ force: true });
         } catch (cleanupErr) {
-          console.error(`Failed to remove partial Compose container for ${serverId}:`, cleanupErr.message);
+          console.error('Failed to remove partial Compose container for', serverId, cleanupErr.message);
         }
         try {
           await container.rename({ name: serverId });
         } catch (restoreErr) {
-          console.error(`Failed to restore legacy container name for ${serverId}:`, restoreErr.message);
+          console.error('Failed to restore legacy container name for', serverId, restoreErr.message);
         }
       }
       if (retainLegacyOnFailure && legacyStopped && wasRunning) {
         try {
           await container.start();
         } catch (restoreErr) {
-          console.error(`Failed to restart legacy container for ${serverId}:`, restoreErr.message);
+          console.error('Failed to restart legacy container for', serverId, restoreErr.message);
         }
       }
       throw err;
