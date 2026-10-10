@@ -122,7 +122,7 @@ async function getCachedServerInfo(serverId) {
   // Check if this container is managed by this app (resides in DATA_DIR)
   const hostDataPath = await getHostDataPath();
   const dataMount = info.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
-  const isManaged = dataMount && dataMount.Source && dataMount.Source.startsWith(hostDataPath);
+  const isManaged = !!(dataMount && dataMount.Source && isContainedInDirectory(dataMount.Source, hostDataPath));
   const hasServerIdLabel = info.Config.Labels && info.Config.Labels['server-id'];
 
 
@@ -369,6 +369,12 @@ const isValidServerId = (serverId) => typeof serverId === 'string'
   && !serverId.startsWith('.')
   && !/[\\/]/.test(serverId)
   && !/\0/.test(serverId);
+const isContainedInDirectory = (targetPath, rootDir) => {
+  const resolvedTarget = path.resolve(targetPath);
+  const resolvedRoot = path.resolve(rootDir);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
 
 // Helper: Get server data path
 const getServerPath = (serverId) => {
@@ -427,13 +433,31 @@ const getHostDataPath = async () => {
 // Helper: Get container by server ID
 const getContainer = async (serverId) => {
   const containers = await docker.listContainers({ all: true });
-  const container = containers.find(c =>
-    (c.Labels && c.Labels['server-id'] === serverId) ||
-    c.Id === serverId ||
-    c.Id.startsWith(serverId) ||
-    (c.Names && c.Names.includes("/" + serverId))
-  );
+  const container = containers.find(c => {
+    if (c.Labels && c.Labels['server-id'] === serverId) return true;
+    if (c.Id === serverId) return true;
+    return Array.isArray(c.Names) && c.Names.includes('/' + serverId);
+  });
   return container ? docker.getContainer(container.Id) : null;
+};
+const conversionLocks = new Map();
+const withServerConversionLock = async (serverId, task) => {
+  const previous = conversionLocks.get(serverId) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  conversionLocks.set(serverId, current);
+
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (conversionLocks.get(serverId) === current) {
+      conversionLocks.delete(serverId);
+    }
+  }
 };
 
 // Keep deployment manifests outside the server data mounted into game containers.
@@ -517,17 +541,37 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
 const canConvertContainerToCompose = async (info) => {
   const config = info.Config || {};
   const hostConfig = info.HostConfig || {};
+  const labels = config.Labels || {};
+  const mount = (info.Mounts || [])[0];
+  const portBindings = hostConfig.PortBindings || {};
+  const portEntries = Object.entries(portBindings);
+
   if (config.Image !== BEDROCK_IMAGE
       || config.User
+      || config.WorkingDir
+      || config.Healthcheck
       || (info.Mounts || []).length !== 1
-      || (info.Mounts || [])[0]?.Type !== 'bind'
-      || (info.Mounts || [])[0]?.RW === false
+      || mount?.Type !== 'bind'
+      || mount?.RW === false
       || hostConfig.RestartPolicy?.Name !== 'unless-stopped'
       || hostConfig.Privileged
+      || hostConfig.ReadonlyRootfs
+      || hostConfig.BindOptions?.Propagation
       || hostConfig.CapAdd?.length
       || hostConfig.CapDrop?.length
       || hostConfig.Devices?.length
-      || hostConfig.SecurityOpt?.length) {
+      || hostConfig.SecurityOpt?.length
+      || (hostConfig.Binds && hostConfig.Binds.length)
+      || labels['com.docker.compose.project']) {
+    return false;
+  }
+
+  const allowedLabels = new Set(['server-id', 'server-name']);
+  if (Object.keys(labels).some((label) => !allowedLabels.has(label))) {
+    return false;
+  }
+
+  if (portEntries.some(([port, bindings]) => !/^19132\/(tcp|udp)$/.test(port) || !Array.isArray(bindings) || bindings.some(binding => !binding || !binding.HostPort))) {
     return false;
   }
 
@@ -683,11 +727,11 @@ const ensureComposeFile = async (serverId, { recreateContainer = true, retainLeg
       if (retainLegacyOnFailure && legacyRenamed) {
         try {
           const containers = await docker.listContainers({ all: true });
-          const replacement = containers.find(c => c.Names?.includes(`/${serverId}`));
+          const replacement = containers.find(c => Array.isArray(c.Names) && c.Names.includes(`/${serverId}`));
           if (replacement) {
             const replacementContainer = docker.getContainer(replacement.Id);
             const replacementInfo = await replacementContainer.inspect();
-            if (replacementInfo.Config?.Labels?.['com.docker.compose.project'] === serverId) {
+            if (replacementInfo?.Name === `/${serverId}` && replacementInfo.Config?.Labels?.['com.docker.compose.project'] === serverId) {
               await replacementContainer.remove({ force: true });
             }
           }
@@ -743,7 +787,7 @@ const discoverServers = async () => {
   }).map(async c => {
     const hostDataPath = await getHostDataPath();
     const dataMount = c.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
-    const isManaged = (dataMount && dataMount.Source && dataMount.Source.startsWith(hostDataPath)) || (c.Labels && c.Labels["server-id"]);
+    const isManaged = !!(dataMount && dataMount.Source && isContainedInDirectory(dataMount.Source, hostDataPath)) || !!(c.Labels && c.Labels["server-id"]);
     return { ...c, isManaged };
   }));
 
@@ -810,35 +854,38 @@ app.post('/api/servers/:id/convert-to-compose', async (req, res) => {
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(serverId)) {
       return res.status(400).json({ error: 'Server ID is not compatible with Docker Compose' });
     }
-    const container = await getContainer(serverId);
-    if (!container) return res.status(404).json({ error: 'Server container not found' });
 
-    const info = await container.inspect();
-    if (info.Config.Labels?.['com.docker.compose.project'] === serverId) {
-      return res.status(409).json({ error: 'Server is already managed by Docker Compose' });
-    }
-    if (!(await canConvertContainerToCompose(info))) {
-      return res.status(400).json({ error: 'This container has settings that cannot be preserved during conversion. Import it instead.' });
-    }
+    await withServerConversionLock(serverId, async () => {
+      const container = await getContainer(serverId);
+      if (!container) return res.status(404).json({ error: 'Server container not found' });
 
-    const hostDataPath = path.resolve(await getHostDataPath());
-    const dataMount = info.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
-    const sourcePath = dataMount?.Source && path.resolve(dataMount.Source);
-    const relativePath = sourcePath && path.relative(hostDataPath, sourcePath);
-    if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
-      return res.status(400).json({ error: 'Only servers stored in the manager data directory can be converted in place. Import external servers instead.' });
-    }
+      const info = await container.inspect();
+      const composeProjectLabel = info.Config?.Labels?.['com.docker.compose.project'];
+      if (composeProjectLabel || (composeProjectLabel !== undefined && composeProjectLabel !== '')) {
+        return res.status(409).json({ error: 'Server is already managed by Docker Compose' });
+      }
+      if (!(await canConvertContainerToCompose(info))) {
+        return res.status(400).json({ error: 'This container has settings that cannot be preserved during conversion. Import it instead.' });
+      }
 
-    await ensureComposeFile(serverId, { retainLegacyOnFailure: true });
-    const convertedContainer = await getContainer(serverId);
-    const convertedInfo = convertedContainer && await convertedContainer.inspect();
-    if (convertedInfo?.Config.Labels?.['com.docker.compose.project'] !== serverId) {
-      throw new Error('Docker Compose did not take ownership of the server container');
-    }
+      const hostDataPath = path.resolve(await getHostDataPath());
+      const dataMount = info.Mounts?.find(m => m.Destination === '/data' || m.Destination === '/app/minecraft-data');
+      const sourcePath = dataMount?.Source && path.resolve(dataMount.Source);
+      if (!sourcePath || !isContainedInDirectory(sourcePath, hostDataPath) || path.basename(sourcePath) !== serverId) {
+        return res.status(400).json({ error: 'Only servers stored in the manager data directory can be converted in place. Import external servers instead.' });
+      }
 
-    invalidateServerCache(serverId);
-    broadcastServerUpdate(serverId);
-    res.json({ message: 'Server converted to Docker Compose successfully' });
+      await ensureComposeFile(serverId, { retainLegacyOnFailure: true });
+      const convertedContainer = await getContainer(serverId);
+      const convertedInfo = convertedContainer && await convertedContainer.inspect();
+      if (convertedInfo?.Config.Labels?.['com.docker.compose.project'] !== serverId) {
+        throw new Error('Docker Compose did not take ownership of the server container');
+      }
+
+      invalidateServerCache(serverId);
+      broadcastServerUpdate(serverId);
+      res.json({ message: 'Server converted to Docker Compose successfully' });
+    });
   } catch (err) {
     console.error('Error converting server to Docker Compose:', err);
     res.status(500).json({ error: err.message });
