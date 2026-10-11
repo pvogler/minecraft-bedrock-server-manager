@@ -1238,6 +1238,10 @@ app.post('/api/servers/:id/start', async (req, res) => {
     // Try to start the instance via docker compose first
     try {
       await ensureComposeFile(serverId);
+      const instanceComposeFilePath = getLegacyComposeFilePath(serverId);
+      if (!(await fs.pathExists(instanceComposeFilePath))) {
+        await fs.copy(composeFilePath, instanceComposeFilePath, { overwrite: false });
+      }
       await runCompose(serverId, 'up -d');
 
       // Update metadata with actual container name
@@ -1324,8 +1328,14 @@ app.post('/api/servers/:id/stop', async (req, res) => {
     const container = await getContainer(req.params.id);
     if (!container) return res.status(404).json({ error: 'Server not found' });
 
-    await ensureComposeFile(req.params.id);
-    await runCompose(req.params.id, 'stop');
+    const info = await container.inspect();
+    if (info.Config?.Labels?.['com.docker.compose.project'] === req.params.id) {
+      await ensureComposeFile(req.params.id);
+      await runCompose(req.params.id, 'stop');
+    } else if (info.State.Running) {
+      await container.stop();
+    }
+    invalidateServerCache(req.params.id);
     // Broadcast server update
     setTimeout(() => broadcastServerUpdate(req.params.id), 1000);
     res.json({ message: 'Server stopped' });
