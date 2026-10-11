@@ -1650,15 +1650,21 @@
         async function saveConfig() {
             try {
                 showLoading();
-                await fetch(`${API_BASE}/servers/${state.selectedServer}/config`, {
+                const response = await fetch(`${API_BASE}/servers/${state.selectedServer}/config`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(state.config)
                 });
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to save configuration');
+                }
                 hideLoading();
                 Swal.fire({
                     title: 'Success',
-                    text: 'Configuration saved!',
+                    text: result.restarted
+                        ? `Configuration saved. Server restarted on port ${result.gamePort}.`
+                        : 'Configuration saved!',
                     icon: 'success',
                     confirmButtonColor: '#10b981',
                     timer: 2000,
@@ -2600,6 +2606,7 @@
             }
 
             const enumFields = {
+                'server-network-type': ['raknet', 'nethernet'],
                 'gamemode': ['survival', 'creative', 'adventure'],
                 'difficulty': ['peaceful', 'easy', 'normal', 'hard'],
                 'default-player-permission-level': ['visitor', 'member', 'operator'],

@@ -536,6 +536,7 @@ const writeComposeFile = async (serverId, hostServerPath, { name, version, gameP
   });
 
   await fs.writeFile(getComposeFilePath(serverId), compose, 'utf8');
+  await fs.writeFile(getLegacyComposeFilePath(serverId), compose, 'utf8');
 };
 
 const canConvertContainerToCompose = async (info) => {
@@ -1732,24 +1733,21 @@ app.put('/api/servers/:id/port', async (req, res) => {
 });
 
 // PUT /api/servers/:id/network-type - Switch between RakNet (UDP) and NetherNet (TCP + UDP range)
-app.put('/api/servers/:id/network-type', async (req, res) => {
-  try {
-    const { networkType } = req.body;
+const updateServerNetworkType = async (serverId, networkType, configContent) => {
     if (networkType !== 'RakNet' && networkType !== 'NetherNet') {
-      return res.status(400).json({ error: "networkType must be 'RakNet' or 'NetherNet'" });
+      throw Object.assign(new Error("networkType must be 'RakNet' or 'NetherNet'"), { statusCode: 400 });
     }
 
-    const serverId = req.params.id;
     const serverPath = getServerPath(serverId);
     if (!await fs.pathExists(serverPath)) {
-      return res.status(404).json({ error: 'Managed server not found' });
+      throw Object.assign(new Error('Managed server not found'), { statusCode: 404 });
     }
     const hostDataPath = await getHostDataPath();
     const hostServerPath = path.join(hostDataPath, serverId);
 
     const container = await getContainer(serverId);
     if (!container) {
-      return res.status(404).json({ error: 'Container not found' });
+      throw Object.assign(new Error('Container not found'), { statusCode: 404 });
     }
 
     const containerInfo = await container.inspect();
@@ -1759,6 +1757,22 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
     let metadata = {};
     if (await fs.pathExists(metadataPath)) {
       metadata = await fs.readJson(metadataPath);
+    }
+
+    const configPath = path.join(serverPath, 'server.properties');
+    const existingConfig = await fs.pathExists(configPath) ? await fs.readFile(configPath, 'utf8') : '';
+    const transport = containerInfo.Config?.Env?.find(entry => entry.startsWith('TRANSPORT='))?.slice('TRANSPORT='.length);
+    const currentNetworkType = transport
+      || metadata.networkType
+      || existingConfig.match(/^server-network-type=(.+)$/m)?.[1].trim()
+      || 'RakNet';
+    if (currentNetworkType.toLowerCase() === networkType.toLowerCase()) {
+      if (configContent !== undefined) {
+        await fs.writeFile(configPath, configContent, 'utf8');
+        invalidateFileCache(configPath);
+        invalidateServerCache(serverId);
+      }
+      return { networkType, gamePort: metadata.gamePort, restarted: false };
     }
 
     const currentPort = containerInfo.HostConfig.PortBindings['19132/udp']?.[0]?.HostPort
@@ -1775,7 +1789,14 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
     if (wasRunning) {
       await container.stop();
     }
-    await container.remove();
+
+    const updatedConfig = configContent === undefined
+      ? (/^server-network-type=.*$/m.test(existingConfig)
+        ? existingConfig.replace(/^server-network-type=.*$/m, `server-network-type=${networkType.toLowerCase()}`)
+        : `${existingConfig}\nserver-network-type=${networkType.toLowerCase()}`)
+      : configContent;
+    await fs.writeFile(configPath, updatedConfig, 'utf8');
+    invalidateFileCache(configPath);
 
     metadata.networkType = networkType;
     metadata.gamePort = gamePort;
@@ -1783,6 +1804,7 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
 
     // Rewrite docker-compose.yml with the ports/environment for the new transport
     await writeComposeFile(serverId, hostServerPath, { name: metadata.name || serverId, version: metadata.version || 'LATEST', gamePort, memory: metadata.memory || 2 * 1024 * 1024 * 1024, networkType, bindIp: metadata.bindIp });
+    await container.remove();
 
     if (wasRunning) {
       await runCompose(serverId, 'up -d');
@@ -1793,19 +1815,26 @@ app.put('/api/servers/:id/network-type', async (req, res) => {
     const newContainer = await getContainer(serverId);
     metadata.containerName = (await newContainer.inspect()).Name.replace('/', '');
     await fs.writeJson(metadataPath, metadata, { spaces: 2 });
+    invalidateFileCache(metadataPath);
+    invalidateServerCache(serverId);
 
     // Broadcast update
     setTimeout(() => broadcastServerUpdate(serverId), wasRunning ? 3000 : 1000);
 
-    res.json({
-      message: 'Server network type updated successfully',
+    return {
       networkType,
       gamePort,
       restarted: wasRunning
-    });
+    };
+};
+
+app.put('/api/servers/:id/network-type', async (req, res) => {
+  try {
+    const result = await updateServerNetworkType(req.params.id, req.body.networkType);
+    res.json({ message: 'Server network type updated successfully', ...result });
   } catch (err) {
     console.error('Error updating server network type:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
@@ -2538,14 +2567,23 @@ app.put('/api/servers/:id/config', async (req, res) => {
     const configPath = path.join(serverPath, 'server.properties');
 
     const lines = Object.entries(req.body).map(([key, value]) => `${key}=${value}`);
-    await fs.writeFile(configPath, lines.join('\n'));
+    let networkUpdate = {};
+    if (req.body['server-network-type'] !== undefined) {
+      const transport = String(req.body['server-network-type']).trim().toLowerCase();
+      const networkType = transport === 'raknet' ? 'RakNet' : transport === 'nethernet' ? 'NetherNet' : null;
+      networkUpdate = await updateServerNetworkType(req.params.id, networkType, lines.join('\n'));
+    } else {
+      await fs.writeFile(configPath, lines.join('\n'));
+      invalidateFileCache(configPath);
+      invalidateServerCache(req.params.id);
+    }
 
     // Broadcast server details update (config changed)
     setTimeout(() => broadcastServerDetails(req.params.id), 500);
 
-    res.json({ message: 'Configuration saved' });
+    res.json({ message: 'Configuration saved', ...networkUpdate });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
