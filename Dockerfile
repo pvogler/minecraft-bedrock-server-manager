@@ -2,7 +2,7 @@
 # Only `docker compose` is needed at runtime (everything else goes through the
 # Docker API via dockerode), so we avoid Alpine's docker-cli/docker-cli-compose
 # packages, which lag upstream and pull in a much larger vulnerable surface.
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS compose
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS compose
 
 # Bumped by .github/workflows/compose-pin.yml - Dependabot can't track ARG pins
 ARG COMPOSE_VERSION=v5.6.0
@@ -22,7 +22,7 @@ RUN set -eux; \
     /docker-compose version
 
 # Stage 1: Build Stage
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS builder
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS builder
 
 WORKDIR /app
 
@@ -40,7 +40,7 @@ RUN npm run build:css:prod
 RUN npm run copy-assets
 
 # Stage 2: Production Stage
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797
 
 WORKDIR /app
 
