@@ -43,7 +43,7 @@ jobs:
 
       - name: Open pull request
         if: steps.compose.outputs.latest != steps.compose.outputs.current
-        uses: peter-evans/create-pull-request@v8.1.1
+        uses: peter-evans/create-pull-request@v8.1.3
         with:
           branch: chore/compose-${{ steps.compose.outputs.latest }}
           title: "chore(deps): update docker compose to ${{ steps.compose.outputs.latest }}"
